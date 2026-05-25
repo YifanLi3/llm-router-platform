@@ -1,0 +1,38 @@
+# Application configuration.
+# Fill in: api.host, api.port, router.default_model, router.models
+# See Phase 1 doc section 6 for the full schema.
+api:
+  host: "0.0.0.0"
+  port: 8081
+
+router:
+  default_model: "general-small"
+  models:
+    general-small:
+      provider: "mock"
+      max_tokens: 1024
+      cost_per_1k_input: 0.001
+      cost_per_1k_output: 0.002
+      priority: 1
+      capabilities:
+        - general
+        - chat
+    coding-pro:
+      provider: "mock"
+      max_tokens: 2048
+      cost_per_1k_input: 0.002
+      cost_per_1k_output: 0.004
+      priority: 2
+      capabilities:
+        - coding
+        - debugging
+        - general
+    long-context:
+      provider: "mock"
+      max_tokens: 8192
+      cost_per_1k_input: 0.003
+      cost_per_1k_output: 0.006
+      priority: 3
+      capabilities:
+        - general
+        - long_context
