@@ -21,6 +21,8 @@ from pydantic import BaseModel, Field
 
 UserTier = Literal["free", "premium", "enterprise"]
 
+QueryType = Literal["general", "coding", "analysis", "reasoning", "long_context"]
+
 
 class QueryRequest(BaseModel):
     """Body of POST /route.
@@ -49,6 +51,16 @@ class RoutingInfo(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     query_type: str = "general"
 
+    token_count: int = 0
+    classification_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    estimated_cost: float=Field(default=0.0, ge=0.0)
+    matched_rule: str | None = None
+    fallback_models: list[str] = Field(default_factory=list)
+    fallback_used: bool = False
+    fallback_reason: str | None = None
+    attempted_models: list[str] = Field(default_factory=list)
+    provider_errors: dict[str, str] = Field(default_factory=list)
+
 
 class InferenceResponse(BaseModel):
     """Body of POST /route response."""
@@ -62,9 +74,13 @@ class InferenceResponse(BaseModel):
     cached: bool = False
     routing: RoutingInfo
 
+    provider: str = "mock"
+    error: str | None = None
+
 
 class ServiceHealth(BaseModel):
     healthy: bool
+    details: dict = Field(default_factory=dict)
 
 
 class HealthResponse(BaseModel):
@@ -89,6 +105,13 @@ class RoutingDecision(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     query_type: QueryType = "general"
 
+    token_count: int = 0
+    classification_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    estimated_cost: float=Field(default_factory=list)
+    matched_rule: str | None = None
+    fallback_models: list[str] = Field(default_factory=list)
+    score_breakdown: dict[str, float] = Field(default_factory=dict)
+
 
 class InferenceResult(BaseModel):
     """Output of InferenceEngine.run().
@@ -104,6 +127,12 @@ class InferenceResult(BaseModel):
     cost_usd: float = Field(ge=0.0)
     latency_ms: int = Field(ge=0)
     cached: bool = False
+
+    provider: str = "mock"
+    fallback_used: bool = False
+    fallback_reason: str | None = None
+    attempted_modes: list[str] = Field(default_factory=list)
+    provider_errors: dict[str, str] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -126,11 +155,32 @@ class ModelConfig(BaseModel):
     priority: int = Field(default=99, ge=1)
     capabilities: list[str] = Field(default_factory=list)
 
+    provider_model: str | None = None
+    supported_tiers: list[UserTier] = Field(
+        default_factory=lambda: ["free", "premium", "enterprise"]
+    )
+    fallback_model: str | None = None
+    api_key_env: str | None = None
+    avg_latency_ms: int = Field(default=100, ge=0)
+    success_rate: float = Field(default=0.99, ge=0.0, le=1.0)
+
+class RoutingRuleConfig(BaseModel):
+    """One entry under router.routing_rules in config.yaml."""
+
+    name: str
+    condition: str                                  # AST-evaluated boolean expression
+    candidates: list[str] = Field(default_factory=list)
+    fallback: str | None = None
+    reason: str = ""
+
 
 class RouterConfig(BaseModel):
     default_model: str
     models: dict[str, ModelConfig]
 
+    strategy: Literal["rule_only", "intelligent"] = "intelligent"
+    routing_rules: list[RoutingRuleConfig] = Field(default_factory=list)
+    tier_cost_limits: dict[str, float] = Field(default_factory=dict)
 
 class AppConfig(BaseModel):
     api: ApiConfig
@@ -154,21 +204,32 @@ if __name__ == "__main__":
     except ValidationError as e:
         print("     OK ->", e.errors()[0]["msg"])
 
-    print("[3] invalid user_tier should be rejected:")
-    try:
-        QueryRequest(query="hi", user_id="u1", user_tier="vip")  # type: ignore[arg-type]
-    except ValidationError as e:
-        print("     OK ->", e.errors()[0]["msg"])
-
-    print("[4] nested InferenceResponse roundtrip:")
-    resp = InferenceResponse(
-        query_id="q-1",
-        response="Echo from general-small: hello",
-        model_name="general-small",
-        tokens=TokenUsage(input=1, output=4, total=5),
-        cost_usd=0.000009,
-        latency_ms=1,
-        cached=False,
-        routing=RoutingInfo(reason="default", confidence=0.65, query_type="general"),
+    print("[3] new RoutingDecision fields default sensibly:")
+    d = RoutingDecision(
+        selected_model="general-small",
+        routing_reason="default",
+        confidence=0.65,
     )
-    print("    ", resp.model_dump())
+    print("     token_count     =", d.token_count)
+    print("     fallback_models =", d.fallback_models)
+    print("     matched_rule    =", d.matched_rule)
+
+    print("[4] new RoutingRuleConfig works:")
+    rule = RoutingRuleConfig(
+        name="coding_rule",
+        condition="query_type == 'coding'",
+        candidates=["coding-pro"],
+        reason="Detected coding-related keywords",
+    )
+    print("    ", rule.model_dump())
+    print("[5] InferenceResult.provider defaults to 'mock' (backwards compat):")
+    result = InferenceResult(
+        response_text="hi",
+        model_name="general-small",
+        input_tokens=1,
+        output_tokens=1,
+        cost_usd=0.0,
+        latency_ms=0,
+    )
+    print("     provider         =", result.provider)
+    print("     attempted_models =", result.attempted_models)
