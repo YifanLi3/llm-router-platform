@@ -59,7 +59,7 @@ class RoutingInfo(BaseModel):
     fallback_used: bool = False
     fallback_reason: str | None = None
     attempted_models: list[str] = Field(default_factory=list)
-    provider_errors: dict[str, str] = Field(default_factory=list)
+    provider_errors: dict[str, str] = Field(default_factory=dict)
 
 
 class InferenceResponse(BaseModel):
@@ -94,9 +94,6 @@ class HealthResponse(BaseModel):
 # 2) Internal models -- passed between router and inference engine only
 # ---------------------------------------------------------------------------
 
-QueryType = Literal["general", "coding", "long_context"]
-
-
 class RoutingDecision(BaseModel):
     """Output of QueryRouter.route(). Internal to the service."""
 
@@ -107,7 +104,7 @@ class RoutingDecision(BaseModel):
 
     token_count: int = 0
     classification_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    estimated_cost: float=Field(default_factory=list)
+    estimated_cost: float=Field(default=0.0, ge=0.0)
     matched_rule: str | None = None
     fallback_models: list[str] = Field(default_factory=list)
     score_breakdown: dict[str, float] = Field(default_factory=dict)
@@ -131,7 +128,7 @@ class InferenceResult(BaseModel):
     provider: str = "mock"
     fallback_used: bool = False
     fallback_reason: str | None = None
-    attempted_modes: list[str] = Field(default_factory=list)
+    attempted_models: list[str] = Field(default_factory=list)
     provider_errors: dict[str, str] = Field(default_factory=dict)
 
 

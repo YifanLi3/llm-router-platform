@@ -7,32 +7,88 @@ api:
 
 router:
   default_model: "general-small"
+  strategy: "intelligent"
+  tier_cost_limits:
+    free: 0.01
+    premium: 0.1
+    enterprise: 1.00
+
   models:
     general-small:
       provider: "mock"
+      provider_model: "general-small"
       max_tokens: 1024
       cost_per_1k_input: 0.001
       cost_per_1k_output: 0.002
       priority: 1
-      capabilities:
-        - general
-        - chat
+      capabilities: ["general", "chat"]
+      supported_tiers: ["free", "premium", "enterprise"]
+      fallback_model: null
+      api_key_env: null
+      avg_latency_ms: 80
+      success_rate: 0.995
     coding-pro:
       provider: "mock"
+      provider_model: "mock-code-v1"
       max_tokens: 2048
       cost_per_1k_input: 0.002
       cost_per_1k_output: 0.004
       priority: 2
-      capabilities:
-        - coding
-        - debugging
-        - general
+      capabilities: ["coding", "debugging", "general"]
+      supported_tiers: ["free", "premium", "enterprise"]
+      fallback_model: "general-small"
+      api_key_env: null
+      avg_latency_ms: 150
+      success_rate: 0.99
     long-context:
       provider: "mock"
+      provider_model: "mock-long-v1"
       max_tokens: 8192
       cost_per_1k_input: 0.003
       cost_per_1k_output: 0.006
       priority: 3
-      capabilities:
-        - general
-        - long_context
+      capabilities: ["general", "long_context", "analysis"]
+      supported_tiers: ["premium", "enterprise"]
+      fallback_model: "general-small"
+      api_key_env: null
+      avg_latency_ms: 300
+      success_rate: 0.985
+    reasoning-heavy:
+      provider: "openai"
+      provider_model: "gpt-4o-mini"
+      max_tokens: 4096
+      cost_per_1k_input: 0.005
+      cost_per_1k_output: 0.015
+      priority: 4
+      capabilities: ["general", "reasoning", "analysis"]
+      supported_tiers: ["premium", "enterprise"]
+      fallback_model: "coding-pro"
+      api_key_env: "OPENAI_API_KEY"
+      avg_latency_ms: 800
+      success_rate: 0.97
+
+  # ---------------- Routing rules ----------------
+  # Evaluated top-to-bottom; first match narrows the candidate set.
+  # Available variables in `condition`:
+  #   query_type, token_count, user_tier
+  routing_rules:
+    - name: coding_route
+      condition: "query_type == 'coding'"
+      candidates: [coding-pro, general-small]
+      fallback: general-small
+      reason: "Detected coding-related keywords"
+    - name: long_analysis_route
+      condition: "query_type == 'analysis' and token_count > 80"
+      candidates: [long-context, reasoning-heavy]
+      fallback: general-small
+      reason: "Long analytical query needs large context window"
+    - name: premium_reasoning
+      condition: "query_type == 'reasoning' and user_tier in ['premium', 'enterprise']"
+      candidates: [reasoning-heavy, long-context]
+      fallback: general-small
+      reason: "Premium tier reasoning task"
+    - name: enterprise_long_context
+      condition: "user_tier == 'enterprise' and token_count > 200"
+      candidates: [long-context]
+      fallback: general-small
+      reason: "Enterprise long-context request"
