@@ -50,6 +50,7 @@ def _parse(expr: str) -> ast.Expression:
                 f"disallowed AST node {type(node).__name__} in rule: {expr!r}"
             )
     return tree
+
 def _eval(node: ast.AST, ctx: Mapping[str, Any]) -> Any:
     if isinstance(node, ast.Expression):
         return _eval(node.body, ctx)
@@ -104,6 +105,7 @@ def _eval(node: ast.AST, ctx: Mapping[str, Any]) -> Any:
             left = right
         return True
     raise RuleSyntaxError(f"unhandled node {type(node).__name__}")
+
 def safe_eval(expr: str, context: Mapping[str, Any]) -> bool:
     """Evaluate `expr` against `context`, returning a boolean.
     Raises RuleSyntaxError if `expr` contains disallowed syntax.
@@ -111,6 +113,7 @@ def safe_eval(expr: str, context: Mapping[str, Any]) -> bool:
     """
     tree = _parse(expr)
     return bool(_eval(tree, context))
+    
 # ---------------------------------------------------------------------------
 # Self-test: `uv run python -m app.core.rules`
 # ---------------------------------------------------------------------------

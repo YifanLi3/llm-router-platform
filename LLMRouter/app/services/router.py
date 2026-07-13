@@ -1,55 +1,68 @@
-"""Rule-based query router for Phase 1.
+"""Config-driven intelligent router (Phase 2).
 
-Phase 1 routes purely by hard-coded rules, in this order:
+Pipeline for one request:
+    classify -> tokenise -> rules -> capability filter -> score -> fallback
 
-1. very long query   -> long-context model
-2. coding keywords   -> coding-pro model
-3. everything else   -> the default model from config.yaml
-
-Phase 2 will replace these rules with a config-driven rule engine
-plus weighted scoring; the public interface (route()) will stay the
-same so callers don't need to change.
+The public API `.route(request)` is unchanged from Phase 1; only the
+internals became config-aware.
 """
 
-from app.schemas import AppConfig, QueryRequest, RoutingDecision
+from __future__ import annotations
 
+from app.core.rules import RuleRuntimeError, RuleSyntaxError, safe_eval
 
-CODING_KEYWORDS = ("code", "function", "class", "bug", "python")
-LONG_QUERY_CHAR_THRESHOLD = 1000
+from app.schemas import (
+    AppConfig,
+    ModelConfig,
+    QueryRequest,
+    QueryType,
+    RoutingDecision,
+    UserTier,
+)
 
+# ---------------------------------------------------------------------------
+# Classification & tokenisation constants
+# ---------------------------------------------------------------------------
+
+# Keywords per query type; first bucket with a hit wins.
+_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "coding":    ("code", "function", "class", "bug", "python", "javascript",
+                  "typescript", "compile", "traceback", "algorithm", "debug"),
+    "analysis":  ("analyze", "analysis", "compare", "summari", "review",
+                  "evaluate", "trend"),
+    "reasoning": ("why", "reason", "because", "therefore", "proof",
+                  "prove", "derive"),
+}
+
+_CHARS_PER_TOKEN = 4                # rough English/code approximation
+_LONG_CONTEXT_TOKENS = 500          # promote "general" -> "long_context" above this
+
+# ---------------------------------------------------------------------------
+# Scoring weights (must sum to 1.0)
+# ---------------------------------------------------------------------------
+W_SUCCESS    = 0.20
+W_LATENCY    = 0.15
+W_COST       = 0.15
+W_PRIORITY   = 0.15
+W_CAPABILITY = 0.35
+assert abs(W_SUCCESS + W_LATENCY + W_COST + W_PRIORITY + W_CAPABILITY - 1.0) < 1e-9
 
 class QueryRouter:
-    """Map a QueryRequest to a RoutingDecision."""
+    """Map a QueryRequest to a RoutingDecision using config + scoring."""
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     def route(self, request: QueryRequest) -> RoutingDecision:
-        query = request.query
-
-        if len(query) > LONG_QUERY_CHAR_THRESHOLD:
-            return self._decide(
-                model_name="long-context",
-                reason=f"Long input ({len(query)} chars) routed to long-context model.",
-                confidence=0.90,
-                query_type="long_context",
-            )
-
-        lowered = query.lower()
-        if any(kw in lowered for kw in CODING_KEYWORDS):
-            return self._decide(
-                model_name="coding-pro",
-                reason="Detected coding-related keywords in the query.",
-                confidence=0.82,
-                query_type="coding",
-            )
-
-        return self._decide(
-            model_name=self.config.router.default_model,
-            reason="Using default general-purpose model.",
-            confidence=0.65,
-            query_type="general",
-        )
+        # 1. classify + tokenise
+        query_type, cls_conf = self._classify(request.query)
+        token_count = self._count_tokens(request.query)
+        if query_type == "general" and token_count > _LONG_CONTEXT_TOKENS:
+            query_type, cls_conf = "long_context", 0.85
 
     def _decide(
         self,
