@@ -64,6 +64,71 @@ class QueryRouter:
         if query_type == "general" and token_count > _LONG_CONTEXT_TOKENS:
             query_type, cls_conf = "long_context", 0.85
 
+
+    # ------------------------------------------------------------------
+    # Pipeline stages (each independently testable)
+    # ------------------------------------------------------------------
+
+    def _classify(self, query: str) -> tuple[QueryType, float]:
+        lowered = query.lower()
+        for qt, kws in _KEYWORDS.items():
+            hits = sum(1 for kw in kws if kw in lowered)
+            if hits > 0:
+                return qt, min(0.95, 0.60 + 0.10 * hits)
+        return "general", 0.55
+
+    def _count_tokens(self, query: str) -> int:
+        return max(1, len(query) // _CHARS_PER_TOKEN)
+
+    def _match_rules(
+        self, ctx: dict
+    ) -> tuple[list[str] | None, str | None, str | None]:
+        """Return (candidate_names_or_None, matched_rule_name, rule_fallback).
+
+        No match returns (None, None, None); the whole registry becomes the pool.
+        """
+        for rule in self.config.router.routing_rules:
+            try:
+                if safe_eval(rule.condition, ctx):
+                    return list(rule.candidates), rule.name, rule.fallback
+            except (RuleSyntaxError, RuleRuntimeError) as e:
+                # Broken rule shouldn't kill routing; log-and-continue in prod.
+                # logger.warning("skipping broken rule %r: %s", rule.name, e)
+                continue
+
+        return None, None, None
+
+    def _filter_capabilities(
+        self,
+        *,
+        candidates: List[str] | None,
+        user_tier: UserTier,
+        requested_max_tokens: int,
+        token_count: int,
+    ) -> list[str]:
+        models = self.config.router.models
+        pool = candidates if candidates is not None else list(models.keys())
+
+        tier_limit = self.config.router.tier_cost_limits.get(user_tier, float("inf"))
+
+        eligible: list[str] = []
+
+        for name in pool:
+            if name not in models:
+                continue
+            m = models[name]
+            if user_tier not in m.supported_tiers:
+                continue
+            if requested_max_tokens > m.max_tokens:
+                continue
+            est = self._estimate_cost(m, token_count, requested_max_tokens)
+            if est > tier_limit:
+                continue
+            eligible.append(name)
+        return eligible
+            
+
+
     def _decide(
         self,
         *,
