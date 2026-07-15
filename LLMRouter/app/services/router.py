@@ -9,6 +9,9 @@ internals became config-aware.
 
 from __future__ import annotations
 
+import logging
+logger = logging.getLogger(__name__)
+
 from app.core.rules import RuleRuntimeError, RuleSyntaxError, safe_eval
 
 from app.schemas import (
@@ -52,6 +55,14 @@ class QueryRouter:
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
+        logger.debug(
+            "QueryRouter initialised",
+            extra={
+                "num_models": len(config.router.models),
+                "num_rules":  len(config.router.routing_rules),
+                "strategy":   config.router.strategy,
+            },
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -63,6 +74,111 @@ class QueryRouter:
         token_count = self._count_tokens(request.query)
         if query_type == "general" and token_count > _LONG_CONTEXT_TOKENS:
             query_type, cls_conf = "long_context", 0.85
+
+        logger.debug(
+            "classified",
+            extra={
+                "query_type":  query_type,
+                "cls_conf":    cls_conf,
+                "token_count": token_count,
+                "user_tier":   request.user_tier,
+            },
+        )
+
+        # 2. rule matching
+        ctx = {
+            "query_type": query_type,
+            "token_count": token_count,
+            "user_tier": request.user_tier,
+        }
+        candidates, matched_rule, rule_fallback = self._match_rules(ctx)
+
+        logger.debug(
+            "rule matching done",
+            extra={"matched_rule": matched_rule, "candidates": candidates},
+        )
+
+        # 3. capability filter
+        eligible = self._filter_capabilities(
+            candidates=candidates,
+            user_tier=request.user_tier,
+            requested_max_tokens=request.max_tokens,
+            token_count=token_count,
+        )
+
+        logger.debug("capability filter", extra={"eligible": eligible})
+
+        # 4. graceful degradation
+        if not eligible:
+            logger.warning(
+                "no eligible model, degrading to default",
+                extra={
+                    "user_tier":   request.user_tier,
+                    "query_type":  query_type,
+                    "matched_rule": matched_rule,
+                },
+            )
+            return self._degrade(
+                query_type=query_type,
+                token_count=token_count,
+                cls_conf=cls_conf,
+                matched_rule=matched_rule,
+                reason="No model passed capability filter; using default.",
+            )
+
+        # 5. score & rank
+        ranked = self._rank(
+            eligible=eligible,
+            query_type=query_type,
+            token_count=token_count,
+            requested_max_tokens=request.max_tokens,
+        )
+        top_name, top_score, top_breakdown = ranked[0]
+
+        # 6. fallback chain
+        fallback_models = self._build_fallback_chain(
+            top=top_name,
+            ranked_tail=[n for n, _, _ in ranked[1:]],
+            rule_fallback=rule_fallback,
+            model_static_fallback=self.config.router.models[top_name].fallback_model,
+        )
+
+        # 7. assemble decision
+        est_cost = self._estimate_cost(
+            self.config.router.models[top_name], token_count, request.max_tokens
+        )
+        reason = (
+            (f"[rule={matched_rule}] " if matched_rule else "[no rule matched] ")
+            + f"scored {len(eligible)} candidate(s); top={top_name} ({top_score:.3f})"
+        )
+
+        # One INFO line per request. Contains everything an operator needs
+        # to answer "why did this request go to model X?".
+        logger.info(
+            "route decided",
+            extra={
+                "user_tier":       request.user_tier,
+                "query_type":      query_type,
+                "matched_rule":    matched_rule,
+                "selected_model":  top_name,
+                "score":           round(top_score, 4),
+                "fallback_models": fallback_models,
+                "est_cost":        round(est_cost, 6),
+            },
+        )
+
+        return RoutingDecision(
+            selected_model=top_name,
+            routing_reason=reason,
+            confidence=min(0.99, 0.60 + top_score * 0.4),
+            query_type=query_type,
+            token_count=token_count,
+            classification_confidence=cls_conf,
+            estimated_cost=est_cost,
+            matched_rule=matched_rule,
+            fallback_models=fallback_models,
+            score_breakdown=top_breakdown,
+        )
 
 
     # ------------------------------------------------------------------
@@ -101,7 +217,7 @@ class QueryRouter:
     def _filter_capabilities(
         self,
         *,
-        candidates: List[str] | None,
+        candidates: list[str] | None,
         user_tier: UserTier,
         requested_max_tokens: int,
         token_count: int,
@@ -115,71 +231,159 @@ class QueryRouter:
 
         for name in pool:
             if name not in models:
+                logger.warning("rule references unknown model", extra={"model": name})
                 continue
             m = models[name]
             if user_tier not in m.supported_tiers:
+                logger.debug(
+                    "filtered: tier not supported",
+                    extra={"model": name, "user_tier": user_tier},
+                )
                 continue
             if requested_max_tokens > m.max_tokens:
+                logger.debug(
+                    "filtered: max_tokens exceeds model capacity",
+                    extra={"model": name, "req": requested_max_tokens, "cap": m.max_tokens},
+                )
                 continue
             est = self._estimate_cost(m, token_count, requested_max_tokens)
             if est > tier_limit:
+                logger.debug(
+                    "filtered: over tier cost limit",
+                    extra={"model": name, "est_cost": est, "limit": tier_limit},
+                )
                 continue
             eligible.append(name)
         return eligible
-            
 
 
-    def _decide(
+    def _rank(
         self,
         *,
-        model_name: str,
-        reason: str,
-        confidence: float,
+        eligible: list[str],
         query_type: str,
-    ) -> RoutingDecision:
-        """Build a RoutingDecision, falling back to the default model if
-        the requested one isn't declared in config.yaml.
-        """
+        token_count: int,
+        requested_max_tokens: int,
+    ) -> list[tuple[str, float, dict[str, float]]]:
         models = self.config.router.models
+
+        latencies = [models[n].avg_latency_ms for n in eligible]
+        costs = [self._estimate_cost(models[n] ,token_count, requested_max_tokens)
+                for n in eligible]
+
+        priorities = [models[n].priority for n in eligible]
+
+        max_lat = max(latencies) or 1
+        max_cost = max(costs) or 1
+        max_prio = max(priorities) or 1
+
+        scored: list[tuple[str, float, dict[str, float]]] = []
+
+        for i, name in enumerate(eligible):
+            m = models[name]
+            s_success       = m.success_rate
+            s_latency       = 1.0 - (latencies[i] / max_lat)
+            s_cost          = 1.0 - (costs[i] / max_cost)
+            s_priority      = 1.0 - (priorities[i] / max_prio)
+            s_capability    = 1.0 if query_type in m.capabilities else 0.0
+
+            total = (W_SUCCESS      * s_success
+                    + W_LATENCY     * s_latency
+                    + W_COST        * s_cost
+                    + W_PRIORITY    * s_priority
+                    + W_CAPABILITY  * s_capability)
+
+            breakdown = {
+                "success":    round(W_SUCCESS    * s_success,    4),
+                "latency":    round(W_LATENCY    * s_latency,    4),
+                "cost":       round(W_COST       * s_cost,       4),
+                "priority":   round(W_PRIORITY   * s_priority,   4),
+                "capability": round(W_CAPABILITY * s_capability, 4),
+                "total":      round(total, 4),
+            }
+
+            scored.append((name, total, breakdown))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        logger.debug(
+            "ranking complete",
+            extra={"ranked": [(n, round(s, 4)) for n, s, _ in scored]},
+        )
+        return scored
+            
+    # ------------------------------------------------------------------
+    # Small helpers
+    # ------------------------------------------------------------------
+    def _estimate_cost(
+        self, m: ModelConfig, input_tokens: int, output_tokens: int
+    ) -> float:
+        return (input_tokens  / 1000.0 * m.cost_per_1k_input
+              + output_tokens / 1000.0 * m.cost_per_1k_output)
+
+    def _build_fallback_chain(
+        self,
+        *,
+        top: str,
+        ranked_tail: list[str],
+        rule_fallback: str | None,
+        model_static_fallback: str | None,
+    ) -> list[str]:
+        models = self.config.router.models
+        chain: list[str] = []
+
+        def _push(name: str | None) -> None:
+            if not name or name == top or name in chain or name not in models:
+                return
+            chain.append(name)
+
+        for n in ranked_tail:
+            _push(n)
+        _push(rule_fallback)
+        _push(model_static_fallback)
+        return chain
+
+    def _degrade(
+        self,
+        *,
+        query_type: str,
+        token_count: int,
+        cls_conf: float,
+        matched_rule: str | None,
+        reason: str,
+    ) -> RoutingDecision:
         default = self.config.router.default_model
-
-        if model_name not in models:
-            return RoutingDecision(
-                selected_model=default,
-                routing_reason=(
-                    f"Requested model '{model_name}' not in config; "
-                    f"falling back to default '{default}'."
-                ),
-                confidence=0.50,
-                query_type=query_type,
-            )
-
         return RoutingDecision(
-            selected_model=model_name,
+            selected_model=default,
             routing_reason=reason,
-            confidence=confidence,
+            confidence=0.50,
             query_type=query_type,
+            token_count=token_count,
+            classification_confidence=cls_conf,
+            estimated_cost=0.0,
+            matched_rule=matched_rule,
+            fallback_models=[],
+            score_breakdown={},
         )
 
 
 # ---------------------------------------------------------------------------
 # Self-test:  uv run python -m app.services.router
 # ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
     from app.core.config import get_config
-
     router = QueryRouter(get_config())
-
     cases = [
-        ("normal greeting", "hello"),
-        ("coding keyword",  "Write a python function to reverse a list"),
-        ("class keyword",   "Help me debug this class"),
-        ("long input",      "a " * 600),
+        ("greeting/free",       "hello",                                              "free"),
+        ("coding/free",         "write a python function to reverse a list",          "free"),
+        ("analysis/premium",    "please analyze and compare these three trends " * 5, "premium"),
+        ("reasoning/premium",   "why does this proof derive the theorem?",            "premium"),
+        ("long/enterprise",     "a " * 700,                                           "enterprise"),
+        ("expensive/free",      "please analyze deeply " * 30,                        "free"),
     ]
-
-    for label, q in cases:
-        req = QueryRequest(query=q, user_id="u1", user_tier="free")
+    for label, q, tier in cases:
+        req = QueryRequest(query=q, user_id="u1", user_tier=tier, max_tokens=512)
         d = router.route(req)
-        print(f"[{label:<18}] -> model={d.selected_model:<14} "
-              f"type={d.query_type:<13} reason={d.routing_reason}")
+        print(f"[{label:<20}] {d.selected_model:<16} "
+              f"type={d.query_type:<12} rule={str(d.matched_rule):<22} "
+              f"score={d.score_breakdown.get('total', 0):.3f} "
+              f"fb={d.fallback_models}")

@@ -18,6 +18,8 @@ def run() -> None:
     `uv run python main.py` without remembering uvicorn flags.
     """
     import uvicorn
+    from app.core.logging import configure_logging
 
+    configure_logging()
     cfg = get_config()
     uvicorn.run("app.main:app", host=cfg.api.host, port=cfg.api.port)
