@@ -371,6 +371,8 @@ class QueryRouter:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     from app.core.config import get_config
+    from app.core.logging import configure_logging
+    configure_logging(level="DEBUG")
     router = QueryRouter(get_config())
     cases = [
         ("greeting/free",       "hello",                                              "free"),
