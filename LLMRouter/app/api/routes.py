@@ -42,14 +42,39 @@ def get_inference_engine() -> InferenceEngine:
 # ---------------------------------------------------------------------------
 
 @api_router.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
+def health(
+    query_router: QueryRouter = Depends(get_query_router),
+    engine: InferenceEngine = Depends(get_inference_engine),
+) -> HealthResponse:
+    cfg = query_router.config
+    providers = engine.provider_health()
+
+    all_providers_healthy = all(
+        provider["healthy"] for provider in providers.values()
+    )
+    status = "healthy" if all_providers_healthy else "degraded"
+
     return HealthResponse(
-        status="healthy",
+        status=status,
         services={
-            "router":    ServiceHealth(healthy=True),
-            "inference": ServiceHealth(healthy=True),
+            "router": ServiceHealth(
+                healthy=True,
+                details={
+                    "default_model": cfg.router.default_model,
+                    "model_count": len(cfg.router.models),
+                    "strategy": cfg.router.strategy,
+                    "rule_count": len(cfg.router.routing_rules),
+                },
+            ),
+            "inference": ServiceHealth(
+                healthy=any(
+                    provider["healthy"] for provider in providers.values()
+                ),
+                details={"providers": providers},
+            ),
         },
     )
+    
 
 # ---------------------------------------------------------------------------
 # POST /route

@@ -85,6 +85,38 @@ class InferenceEngine:
             "All inference attempts failed. "
             f"attempted={attempted_models}, errors={provider_errors}"
         )
+
+    def provider_health(self) -> dict[str, dict[str, object]]:
+        """Describe configured providers without sending inference requests."""
+        providers: dict[str, dict[str, object]] = {}
+
+        for model_name, model_cfg in self.config.router.models.items():
+            provider_name = model_cfg.provider
+
+            if provider_name not in providers:
+                providers[provider_name] = {
+                    "healthy": provider_name == "mock",
+                    "models": [],
+                }
+
+            providers[provider_name]["models"].append(model_name)
+
+            if provider_name != "mock":
+                providers[provider_name]["healthy"] = False
+
+                if not model_cfg.api_key_env:
+                    reason = "No API-key environment variable is configured."
+                else:
+                    reason = (
+                        f"External provider is unavailable: "
+                        f"{model_cfg.api_key_env!r} is not configured locally "
+                        "or its real SDK integration is not implemented."
+                    )
+
+                providers[provider_name]["reason"] = reason
+
+        return providers
+
     def _get_provider(self, provider_name: str) -> BaseProvider:
         """Return the implementation for a configured provider name."""
         if provider_name == "mock":

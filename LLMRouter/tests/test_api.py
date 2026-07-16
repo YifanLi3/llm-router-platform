@@ -17,7 +17,14 @@ def test_health_returns_200():
     r = client.get("/health")
     assert r.status_code == 200
     body = r.json()
-    assert body["status"] == "healthy"
+    assert body["status"] == "degraded"
+    assert body["services"]["router"]["healthy"] is True
+    assert body["services"]["router"]["details"]["model_count"] == 4
+
+    providers = body["services"]["inference"]["details"]["providers"]
+    assert providers["mock"]["healthy"] is True
+    assert providers["openai"]["healthy"] is False
+    assert "OPENAI_API_KEY" in providers["openai"]["reason"]
     assert "services" in body
 
 # ---------------------------------------------------------------------------
