@@ -72,3 +72,23 @@ def test_route_invalid_tier_returns_422():
         "user_tier": "vip",
     })
     assert r.status_code == 422
+
+def test_route_returns_fallback_execution_details():
+    r = client.post(
+        "/route",
+        json={
+            "query": "why does this proof work?",
+            "user_id": "u1",
+            "user_tier": "premium",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    # reasoning-heavy uses the unavailable OpenAI placeholder.
+    assert body["model_name"] != "reasoning-heavy"
+    assert body["provider"] == "mock"
+    routing = body["routing"]
+    assert routing["fallback_used"] is True
+    assert routing["attempted_models"][0] == "reasoning-heavy"
+    assert "reasoning-heavy" in routing["provider_errors"]
+    assert "OPENAI_API_KEY" in routing["provider_errors"]["reasoning-heavy"]
