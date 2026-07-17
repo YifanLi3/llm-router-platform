@@ -15,7 +15,7 @@ router:
 
   models:
     general-small:
-      provider: "mock"
+      provider: "local"
       provider_model: "general-small"
       max_tokens: 1024
       cost_per_1k_input: 0.001
@@ -28,7 +28,7 @@ router:
       avg_latency_ms: 80
       success_rate: 0.995
     coding-pro:
-      provider: "mock"
+      provider: "local"
       provider_model: "mock-code-v1"
       max_tokens: 2048
       cost_per_1k_input: 0.002
@@ -41,7 +41,7 @@ router:
       avg_latency_ms: 150
       success_rate: 0.99
     long-context:
-      provider: "mock"
+      provider: "local"
       provider_model: "mock-long-v1"
       max_tokens: 8192
       cost_per_1k_input: 0.003

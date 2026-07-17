@@ -22,7 +22,7 @@ def test_health_returns_200():
     assert body["services"]["router"]["details"]["model_count"] == 4
 
     providers = body["services"]["inference"]["details"]["providers"]
-    assert providers["mock"]["healthy"] is True
+    assert providers["local"]["healthy"] is True
     assert providers["openai"]["healthy"] is False
     assert "OPENAI_API_KEY" in providers["openai"]["reason"]
     assert "services" in body
@@ -80,7 +80,8 @@ def test_route_invalid_tier_returns_422():
     })
     assert r.status_code == 422
 
-def test_route_returns_fallback_execution_details():
+def test_route_returns_fallback_execution_details(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     r = client.post(
         "/route",
         json={
@@ -93,7 +94,7 @@ def test_route_returns_fallback_execution_details():
     body = r.json()
     # reasoning-heavy uses the unavailable OpenAI placeholder.
     assert body["model_name"] != "reasoning-heavy"
-    assert body["provider"] == "mock"
+    assert body["provider"] == "local"
     routing = body["routing"]
     assert routing["fallback_used"] is True
     assert routing["attempted_models"][0] == "reasoning-heavy"

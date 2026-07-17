@@ -4,12 +4,29 @@ from __future__ import annotations
 
 import logging
 
+from app.providers.anthropic import AnthropicProvider
 from app.providers.base import BaseProvider, ProviderError
-from app.providers.mock import MockProvider
-from app.providers.unavailable import ExternalProviderPlaceholder
+from app.providers.local import LocalProvider
+from app.providers.openai import OpenAIProvider
 from app.schemas import AppConfig, InferenceResult, QueryRequest, RoutingDecision
 
 logger = logging.getLogger(__name__)
+
+class InferenceExhaustedError(RuntimeError):
+    """Raised when every selected and fallback model has failed.
+    """
+
+    def __init__(
+        self,
+        attempted_models: list[str],
+        provider_errors: dict[str, str],
+    ) -> None:
+        self.attempted_models = attempted_models
+        self.provider_errors = provider_errors
+
+        super().__init__(
+            f"All inference attempts failed: {attempted_models}"
+        )
 
 class InferenceEngine:
     """Call the selected provider, then retry the routing fallback chain."""
@@ -81,9 +98,9 @@ class InferenceEngine:
                     },
                 )
         # No model in the selected + fallback chain succeeded.
-        raise RuntimeError(
-            "All inference attempts failed. "
-            f"attempted={attempted_models}, errors={provider_errors}"
+        raise InferenceExhaustedError(
+            attempted_models=attempted_models,
+            provider_errors=provider_errors,
         )
 
     def provider_health(self) -> dict[str, dict[str, object]]:
@@ -95,13 +112,13 @@ class InferenceEngine:
 
             if provider_name not in providers:
                 providers[provider_name] = {
-                    "healthy": provider_name == "mock",
+                    "healthy": provider_name == "local",
                     "models": [],
                 }
 
             providers[provider_name]["models"].append(model_name)
 
-            if provider_name != "mock":
+            if provider_name != "local":
                 providers[provider_name]["healthy"] = False
 
                 if not model_cfg.api_key_env:
@@ -119,11 +136,13 @@ class InferenceEngine:
 
     def _get_provider(self, provider_name: str) -> BaseProvider:
         """Return the implementation for a configured provider name."""
-        if provider_name == "mock":
-            return MockProvider()
-        # Phase 2 deliberately does not call external APIs yet.
-        # Missing credentials produce a normal fallback instead of a 500.
-        return ExternalProviderPlaceholder(provider_name)
+        if provider_name == "local":
+            return LocalProvider()
+        if provider_name == "openai":
+            return OpenAIProvider()
+        if provider_name == "anthropic":
+            return AnthropicProvider()
+        raise ValueError(f"Unsupported provider {provider_name!r}.")
 
 
 # ---------------------------------------------------------------------------

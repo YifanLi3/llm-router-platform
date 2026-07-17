@@ -74,7 +74,7 @@ class InferenceResponse(BaseModel):
     cached: bool = False
     routing: RoutingInfo
 
-    provider: str = "mock"
+    provider: str = "local"
     error: str | None = None
 
 
@@ -125,7 +125,7 @@ class InferenceResult(BaseModel):
     latency_ms: int = Field(ge=0)
     cached: bool = False
 
-    provider: str = "mock"
+    provider: str = "local"
     fallback_used: bool = False
     fallback_reason: str | None = None
     attempted_models: list[str] = Field(default_factory=list)

@@ -1,175 +1,148 @@
 # LLM Router & Execution Platform
 
-> 一个面向多模型时代的 **LLM Gateway**：把一个用户请求自动路由到最合适的大模型（OpenAI / Anthropic / vLLM / Ollama）去执行，并管好成本、速度、容错、可观测。
+> An **LLM Gateway** for multi-model applications. It routes each request to an appropriate model backend and manages cost, latency, reliability, and observability.
 
-类比定位：你可以理解为一个**简化版 [LiteLLM](https://github.com/BerriAI/litellm) / [Portkey](https://portkey.ai) / [Helicone](https://helicone.ai)**。
+Conceptually, this project is a simplified version of [LiteLLM](https://github.com/BerriAI/litellm), [Portkey](https://portkey.ai), or [Helicone](https://helicone.ai).
 
----
+## The problem it solves
 
-## 📌 项目要解决的真实痛点
+Teams using multiple model backends—such as GPT-4o, Claude, and local Llama deployments—need a gateway layer for consistent routing and failure handling.
 
-业界但凡同时在用多个大模型（GPT-4o / Claude / 本地 Llama）的团队，都需要这样一层 Gateway：
-
-| 痛点 | Gateway 怎么解 |
+| Problem | Gateway approach |
 |---|---|
-| 用 GPT-4o 回答"今天天气" → 账单爆炸 | 简单 query 路由到便宜的小模型 |
-| OpenAI 抽风一次 → 整个产品 500 | 自动 fallback 到 Anthropic / 本地 |
-| 业务方 N 个服务硬编码模型名 | 业务只调 `/route`，后端随便换 |
-| 不知道 LLM 花了多少钱、慢在哪 | 实时按用户/模型归因成本 + P95 延迟 |
-| 想做模型 A/B 实验 | 改一行配置即可切流量 |
+| Expensive models answer trivial questions | Route simple requests to lower-cost models |
+| A provider outage causes application-wide failures | Retry a fallback model or provider |
+| Many services hard-code model names | Applications call a single `/route` API |
+| Cost and latency are difficult to attribute | Track them by request and selected model |
+| Model A/B experiments require code changes | Change model and routing configuration |
 
----
+## Roadmap
 
-## 🎯 项目路线图 (5 Phases)
-
-| Phase | 主题 | 关键能力 | 状态 |
+| Phase | Focus | Key capabilities | Status |
 |---|---|---|---|
-| **Phase 1** | 主链路打通 | FastAPI + Pydantic + 规则路由 + Mock Provider + 单测 | ✅ **已完成** |
-| **Phase 2** | 智能路由 + 容错 | 配置驱动规则 (AST 安全表达式) + 多 Provider + Fallback 降级链 | 🚧 进行中 |
-| **Phase 3** | 可观测看板 | Streamlit 多页看板：QPS / P95 / SLO / 成本归因 | ⏳ |
-| **Phase 4** | 真实推理 + 推理可观测 | vLLM / Ollama 接入 + SSE 流式 + TTFT/TPOT + Prometheus + 负载感知调度 | ⏳ |
-| **Phase 5** | 生产形态外壳 | OpenAI 兼容协议 + Streamlit Chat 调试台 + 真后端验收 | ⏳ |
+| **Phase 1** | Working request path | FastAPI, Pydantic, rule routing, mock inference, tests | ✅ Complete |
+| **Phase 2** | Intelligent routing and resilience | Config rules, AST-safe expressions, provider abstraction, fallback | ✅ Complete |
+| **Phase 3** | Observability dashboard | Streamlit pages, QPS, P95, SLOs, and cost attribution | ⏳ Planned |
+| **Phase 4** | Real inference and inference observability | vLLM/Ollama, SSE, TTFT/TPOT, Prometheus, load-aware routing | ⏳ Planned |
+| **Phase 5** | Production-facing interface | OpenAI-compatible API, Streamlit console, backend validation | ⏳ Planned |
 
-详细设计文档：[Phase 1](./Phase%201/Phase%201.md) · [Phase 2](./Phase%202/Phase%202.md) · [Phase 3](./Phase%203/Phase%203.md) · [Phase 4](./Phase%204/Phase%204.md) · [Phase 5](./Phase%205/Phase%205.md)
+Design documents: [Phase 1](./Phase%201/Phase%201.md) · [Phase 2](./Phase%202/Phase%202.md) · [Phase 3](./Phase%203/Phase%203.md) · [Phase 4](./Phase%204/Phase%204.md) · [Phase 5](./Phase%205/Phase%205.md)
 
----
-
-## 🏗 架构总览
+## Architecture
 
 ```mermaid
 flowchart TB
-    subgraph Clients["客户端"]
-        Web[Web App]
-        Mobile[Mobile App]
-        SDK["OpenAI SDK<br/>(Phase 5)"]
-    end
-
-    subgraph Gateway["LLM Gateway (本项目)"]
-        API["FastAPI<br/>POST /route<br/>POST /v1/chat/completions"]
-        Router["智能路由<br/>规则 + 打分 + 负载感知"]
-        Engine["推理引擎<br/>+ Fallback 降级链"]
-        Obs["可观测层<br/>Prometheus + 看板"]
-    end
-
-    subgraph Providers["推理后端"]
-        OpenAI["OpenAI<br/>GPT-4o"]
-        Anthropic["Anthropic<br/>Claude"]
-        vLLM["vLLM<br/>本地 7B/70B"]
-        Ollama["Ollama"]
-    end
-
-    Clients -->|HTTP / SSE| API
-    API --> Router
-    Router --> Engine
-    Engine --> OpenAI
-    Engine --> Anthropic
-    Engine --> vLLM
-    Engine --> Ollama
-    API -.metrics.-> Obs
+    Client[Client] -->|HTTP request| API[FastAPI: POST /route]
+    API --> Router[QueryRouter]
+    Router -->|RoutingDecision| Engine[InferenceEngine]
+    Engine --> Local[LocalProvider]
+    Engine --> OpenAI[OpenAIProvider]
+    Engine --> Anthropic[AnthropicProvider]
+    Engine -->|Structured response| API
 ```
 
----
+## Quick start
 
-## 🚀 Quick Start (Phase 1)
-
-### 前置
+### Prerequisites
 
 - Python 3.10+
-- [uv](https://docs.astral.sh/uv/) (推荐) 或 pip
+- [uv](https://docs.astral.sh/uv/)
 
-### 启动服务
+### Start the service
 
 ```bash
 cd LLMRouter
-uv venv
-uv sync
+uv sync --group dev
 uv run python main.py
 ```
 
-服务启动在 `http://localhost:8081`。
+The service listens at `http://localhost:8081`.
 
-### 试一下
+### Try it
 
 ```bash
-# 健康检查
+# Health and configured-provider status
 curl -s http://localhost:8081/health | python3 -m json.tool
 
-# 普通问题 → 会选 general-small
+# General request -> usually selects general-small
 curl -s http://localhost:8081/route \
   -H 'Content-Type: application/json' \
   -d '{"query":"hello","user_id":"u1","user_tier":"free"}' \
   | python3 -m json.tool
 
-# 编程问题 → 会自动选 coding-pro
+# Coding request -> selects coding-pro
 curl -s http://localhost:8081/route \
   -H 'Content-Type: application/json' \
   -d '{"query":"write a python function","user_id":"u1","user_tier":"free"}' \
   | python3 -m json.tool
 ```
 
-### 接口文档
+Interactive API documentation: [http://localhost:8081/docs](http://localhost:8081/docs)
 
-打开浏览器访问：[http://localhost:8081/docs](http://localhost:8081/docs)
-
-### 跑测试
+### Run the test suite
 
 ```bash
 cd LLMRouter
 uv run pytest -v
 ```
 
----
+## Project structure
 
-## 🧩 Phase 1 项目结构
-
-```
+```text
 LLMRouter/
-├── main.py                    # 启动入口  (uv run python main.py)
-├── config.yaml                # 配置驱动：模型清单、单价、路由规则
-├── pyproject.toml             # uv 管理的依赖
+├── main.py                    # Entry point: uv run python main.py
+├── config.yaml                # Model registry, routing rules, and costs
+├── pyproject.toml             # uv dependency configuration
 ├── app/
-│   ├── main.py                # FastAPI 应用工厂
-│   ├── schemas.py             # Pydantic 数据契约 (Wire / Internal / Config 三类)
+│   ├── main.py                # FastAPI application setup
+│   ├── schemas.py             # Wire, internal, and configuration contracts
 │   ├── core/
-│   │   └── config.py          # YAML → AppConfig (lru_cache 单例)
+│   │   ├── config.py          # YAML -> AppConfig, cached per process
+│   │   ├── logging.py         # Central logging configuration
+│   │   └── rules.py           # AST-whitelisted rule evaluator
+│   ├── providers/
+│   │   ├── base.py            # BaseProvider interface
+│   │   ├── local.py           # Deterministic local Echo provider
+│   │   ├── openai.py          # OpenAI provider placeholder
+│   │   └── anthropic.py       # Anthropic provider placeholder
 │   ├── services/
-│   │   ├── router.py          # QueryRouter：规则路由
-│   │   └── inference.py       # MockProvider + InferenceEngine
+│   │   ├── router.py          # Classification, filtering, and scoring
+│   │   └── inference.py       # Provider dispatch and fallback execution
 │   └── api/
-│       └── routes.py          # GET /health, POST /route
+│       └── routes.py          # GET /health and POST /route
 └── tests/
-    └── test_api.py            # 6 个 pytest smoke tests
+    ├── test_api.py            # API integration tests
+    ├── test_router.py         # Router tests
+    ├── test_rules.py          # Safe AST evaluator tests
+    └── test_inference.py      # Provider and fallback tests
 ```
 
-### 设计原则
+### Design principles
 
-- **配置驱动**：模型、单价、路由规则全部从 `config.yaml` 读取，业务代码不写死
-- **分层职责**：API 层只做"组装"，业务逻辑在 services，数据契约在 schemas
-- **三类模型分离**：Wire (HTTP) / Internal (服务内) / Config (镜像 yaml) 互不污染
-- **依赖注入**：QueryRouter / InferenceEngine 通过参数注入 config，方便测试
-- **Fail Fast + 优雅降级**：检查不通过立刻报错；模型缺失时降到默认模型
+- **Configuration-driven:** model metadata, prices, and routing rules come from `config.yaml`.
+- **Layered responsibilities:** the API assembles responses; services hold business logic; schemas define contracts.
+- **Separated schema lifetimes:** wire models cross HTTP boundaries, internal models move within the service, and config models mirror YAML.
+- **Dependency injection:** `QueryRouter` and `InferenceEngine` receive their configuration explicitly for testability.
+- **Graceful degradation:** a provider failure triggers configured fallbacks before the API returns a 503 response.
 
----
+## Technology stack
 
-## 🛠 技术栈
-
-| 类别 | 技术 |
+| Category | Technology |
 |---|---|
-| 语言 | Python 3.10+ |
-| Web | FastAPI · Uvicorn |
-| 数据契约 | Pydantic v2 |
-| 配置 | PyYAML · `@lru_cache` 单例 |
-| 测试 | pytest · FastAPI TestClient |
-| 包管理 | uv |
-| 计划接入 (Phase 2-5) | vLLM · Ollama · OpenAI SDK · Streamlit · Prometheus |
+| Language | Python 3.10+ |
+| API | FastAPI, Uvicorn |
+| Data contracts | Pydantic v2 |
+| Configuration | PyYAML, `@lru_cache` |
+| Testing | pytest, FastAPI TestClient |
+| Package management | uv |
+| Planned integrations | vLLM, Ollama, OpenAI SDK, Streamlit, Prometheus |
 
----
-
-## 📖 接口契约 (Phase 1)
+## API contract
 
 ### `POST /route`
 
-**请求**:
+Request:
+
 ```json
 {
   "query": "write a python function to reverse a list",
@@ -178,42 +151,55 @@ LLMRouter/
 }
 ```
 
-**响应**:
+Response:
+
 ```json
 {
   "query_id": "f47ac10b-58cc-4372-...",
   "response": "Echo from coding-pro: write a python function to reverse a list",
   "model_name": "coding-pro",
+  "provider": "local",
   "tokens": { "input": 8, "output": 11, "total": 19 },
   "cost_usd": 0.00006,
   "latency_ms": 1,
   "cached": false,
   "routing": {
-    "reason": "Detected coding-related keywords in the query.",
+    "reason": "[rule=coding_route] scored 2 candidate(s); top=coding-pro (...)",
     "confidence": 0.82,
-    "query_type": "coding"
+    "query_type": "coding",
+    "matched_rule": "coding_route",
+    "fallback_models": ["general-small"],
+    "fallback_used": false,
+    "attempted_models": ["coding-pro"],
+    "provider_errors": {}
   }
 }
 ```
 
-### 路由规则 (Phase 1 简化版)
+## Phase 2 capabilities
 
-按顺序判断：
+- **Safe rule engine:** evaluates configuration expressions through an AST whitelist and rejects function calls, attribute access, and other unsafe syntax.
+- **Intelligent selection:** filters and scores models by request type, user tier, cost limit, context capacity, capabilities, latency, success rate, and priority.
+- **Provider abstraction:** `LocalProvider`, `OpenAIProvider`, and `AnthropicProvider` implement the same `BaseProvider` interface.
+- **Executed fallback:** if a primary provider fails, `InferenceEngine` tries the router's fallback chain and returns attempts and error details.
+- **Health reporting:** `GET /health` exposes router configuration, provider model lists, and provider availability. The service is `degraded` when external providers are unavailable but a local provider still works.
+- **Structured logging:** run `LOG_LEVEL=DEBUG uv run python main.py` to inspect classification, rule matching, filtering, scoring, and execution.
 
-1. `len(query) > 1000` → 走 `long-context`
-2. 包含 `code` / `function` / `class` / `bug` / `python` 关键词 → 走 `coding-pro`
-3. 其他 → 走 `default_model` (`general-small`)
+### Routing rules
 
-Phase 2 会把这套硬编码规则替换成 **配置驱动的 AST 安全表达式** + **综合打分**。
+Rules are declared in `config.yaml` and checked in order. A matching rule narrows the candidate pool; otherwise, all models proceed through filtering and scoring.
 
----
+```yaml
+- name: coding_route
+  condition: "query_type == 'coding'"
+  candidates: [coding-pro, general-small]
+  fallback: general-small
+```
 
-## 📜 License
+## License
 
 MIT
 
----
+## Author
 
-## 🙋 作者
-
-[@YifanLi3](https://github.com/YifanLi3) · 学习项目，准备投递 AI Platform / LLM Infra 岗位。
+[@YifanLi3](https://github.com/YifanLi3) · Learning project for AI Platform and LLM Infrastructure roles.

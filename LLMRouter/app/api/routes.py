@@ -9,7 +9,7 @@ Any real logic belongs in app/services/.
 import uuid
 from functools import lru_cache
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.config import get_config
 from app.schemas import (
@@ -20,7 +20,7 @@ from app.schemas import (
     ServiceHealth,
     TokenUsage,
 )
-from app.services.inference import InferenceEngine
+from app.services.inference import InferenceEngine, InferenceExhaustedError
 from app.services.router import QueryRouter
 
 api_router = APIRouter()
@@ -88,7 +88,18 @@ def route(
 ) -> InferenceResponse:
     query_id = str(uuid.uuid4())
     decision = query_router.route(request)
-    result = engine.run(request, decision)
+    try:
+        result = engine.run(request, decision)
+    except InferenceExhaustedError as error:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "No configured inference model could serve this request.",
+                "attempted_models": error.attempted_models,
+                "provider_errors": error.provider_errors,
+            },
+        ) from error
+
     return InferenceResponse(
         query_id=query_id,
         response=result.response_text,
