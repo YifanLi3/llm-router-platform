@@ -9,7 +9,7 @@ Any real logic belongs in app/services/.
 import uuid
 from functools import lru_cache
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.config import get_config
 from app.core.telemetry import RequestRecord, TelemetryStore
@@ -25,6 +25,7 @@ from app.schemas import (
     ServiceHealth,
     StatusResponse,
     TokenUsage,
+    LogsResponse,
 )
 from app.services.inference import InferenceEngine, InferenceExhaustedError
 from app.services.router import QueryRouter
@@ -125,6 +126,15 @@ def feedback(
     feedback_count = telemetry.submit_feedback()
     return FeedbackResponse(accepted=True, feedback_count=feedback_count)
 
+@api_router.get("/logs", response_model=LogsResponse)
+def logs(
+    limit: int = Query(default=50, ge=1, le=200),
+    telemetry: TelemetryStore = Depends(get_telemetry),
+) -> LogsResponse:
+    return LogsResponse(
+        records=telemetry.recent_records(limit),
+        feedback_count=telemetry.feedback_count,
+    )
 
 # ---------------------------------------------------------------------------
 # POST /route

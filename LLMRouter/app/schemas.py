@@ -146,6 +146,23 @@ class FeedbackResponse(BaseModel):
     accepted: bool
     feedback_count: int = Field(ge=0)
 
+class RequestLogEntry(BaseModel):
+    created_at: str
+    query_id: str
+    user_tier: str
+    model_name: str
+    provider: str
+    success: bool
+    latency_ms: int = Field(ge=0)
+    cost_usd: float = Field(ge=0.0)
+    cached: bool
+    error: str | None = None
+    
+class LogsResponse(BaseModel):
+    records: list[RequestLogEntry] = Field(default_factory=list)
+    feedback_count: int = Field(ge=0)
+
+
 
 # ---------------------------------------------------------------------------
 # 2) Internal models -- passed between router and inference engine only

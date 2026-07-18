@@ -8,8 +8,9 @@ would replace it with durable metrics and event storage.
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from threading import Lock
+from datetime import datetime, timezone
 
 
 _MAX_RECORDS = 10_000
@@ -27,6 +28,9 @@ class RequestRecord:
     cost_usd: float
     cached: bool
     error: str | None = None
+    created_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
 
 
 def _percentile_95(values: list[int]) -> float:
@@ -123,7 +127,32 @@ class TelemetryStore:
             "hotspots": hotspots,
         }
 
+    def recent_records(self, limit: int = 50) -> list[dict]:
+        """Return the newest telemetry records for dashboard troubleshooting."""
+        with self._lock:
+            records = list(self._records)[-limit:]
+        return [
+            {
+                "created_at": record.created_at,
+                "query_id": record.query_id,
+                "user_tier": record.user_tier,
+                "model_name": record.model_name,
+                "provider": record.provider,
+                "success": record.success,
+                "latency_ms": record.latency_ms,
+                "cost_usd": record.cost_usd,
+                "cached": record.cached,
+                "error": record.error,
+            }
+            for record in reversed(records)
+        ]
+
     @property
     def record_count(self) -> int:
         with self._lock:
             return len(self._records)
+
+    @property
+    def feedback_count(self) -> int:
+        with self._lock:
+            return self._feedback_count

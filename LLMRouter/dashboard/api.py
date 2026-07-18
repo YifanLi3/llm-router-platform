@@ -28,3 +28,27 @@ def fetch_json(path: str) -> dict[str, Any]:
         raise DashboardApiError(
             f"Backend unavailable at {API_BASE_URL}: {error}"
         ) from error
+
+def post_json(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Send JSON to one FastAPI endpoint and return its JSON response."""
+    url = f"{API_BASE_URL}{path}"
+    body = json.dumps(payload).encode("utf-8")
+
+    request = Request(
+        url=url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urlopen(request, timeout=3) as response:
+            if response.status != 200:
+                raise DashboardApiError(
+                    f"Backend returned HTTP {response.status} for {path}."
+                )
+            return json.loads(response.read().decode("utf-8"))
+    except (URLError, TimeoutError, json.JSONDecodeError) as error:
+        raise DashboardApiError(
+            f"Backend unavailable at {API_BASE_URL}: {error}"
+        ) from error

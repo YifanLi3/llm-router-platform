@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from api import API_BASE_URL, DashboardApiError, fetch_json
+from api import API_BASE_URL, DashboardApiError, fetch_json, post_json
 
 st.set_page_config(
     page_title="LLM Router Console",
@@ -25,7 +25,10 @@ def load_endpoint(path: str) -> dict | None:
 
 with st.sidebar:
     st.header("Navigation")
-    page = st.radio("Page", ["Overview", "Models", "Performance"])
+    page = st.radio(
+        "Page", 
+        ["Overview", "Models", "Performance", "Users", "Costs", "Alerts", "Logs"],
+    )
 
     if st.button("Refresh data"):
         st.rerun()
@@ -116,3 +119,154 @@ elif page == "Performance":
                 st.warning(f"{model_name} exceeds the latency threshold.")
         else:
             st.success("No latency hotspots detected.")
+elif page == "Users":
+    st.header("Users")
+    analytics = load_endpoint("/analytics")
+    if analytics is not None:
+        tiers = analytics["user_tiers"]
+        if not tiers:
+            st.info("No user-tier data yet. Send requests to POST /route first.")
+        else:
+            col1, col2 = st.columns(2)
+            col1.metric(
+                "Tracked user tiers",
+                len(tiers),
+            )
+            col2.metric(
+                "Total requests",
+                analytics["total_requests"],
+            )
+            st.subheader("Usage by user tier")
+            st.dataframe(
+                tiers,
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.subheader("Requests by user tier")
+            request_counts = {
+                tier["user_tier"]: tier["request_count"]
+                for tier in tiers
+            }
+            st.bar_chart(request_counts)
+elif page == "Costs":
+    st.header("Costs")
+    analytics = load_endpoint("/analytics")
+    if analytics is not None:
+        col1, col2 = st.columns(2)
+        col1.metric(
+            "Total cost",
+            f"${analytics['total_cost_usd']:.6f}",
+        )
+        col2.metric(
+            "Models used",
+            len(analytics["models"]),
+        )
+        models = analytics["models"]
+        if not models:
+            st.info("No cost data yet. Send requests to POST /route first.")
+        else:
+            st.subheader("Cost by model")
+            cost_rows = [
+                {
+                    "model_name": model["model_name"],
+                    "provider": model["provider"],
+                    "request_count": model["request_count"],
+                    "total_cost_usd": model["total_cost_usd"],
+                }
+                for model in models
+            ]
+            st.dataframe(
+                cost_rows,
+                use_container_width=True,
+                hide_index=True,
+            )
+            chart_data = {
+                model["model_name"]: model["total_cost_usd"]
+                for model in models
+            }
+            st.bar_chart(chart_data)
+elif page == "Alerts":
+    st.header("Alerts")
+    quality = load_endpoint("/quality/dashboard")
+    health = load_endpoint("/health")
+    if quality is not None:
+        st.subheader("Latency SLO")
+        if quality["slo_latency_compliant"]:
+            st.success(
+                f"P95 latency is within the SLO: "
+                f"{quality['p95_latency_ms']:.1f} ms <= 1000 ms"
+            )
+        else:
+            st.error(
+                f"P95 latency exceeds the SLO: "
+                f"{quality['p95_latency_ms']:.1f} ms > 1000 ms"
+            )
+        st.subheader("Hotspot models")
+        if quality["hotspots"]:
+            for model_name in quality["hotspots"]:
+                st.warning(f"Latency hotspot detected: {model_name}")
+        else:
+            st.success("No model latency hotspots detected.")
+    if health is not None:
+        st.subheader("Provider availability")
+        providers = health["services"]["inference"]["details"]["providers"]
+        for provider_name, provider_info in providers.items():
+            models = ", ".join(provider_info["models"])
+            if provider_info["healthy"]:
+                st.success(f"{provider_name}: available ({models})")
+            else:
+                reason = provider_info.get("reason", "No reason supplied.")
+                st.warning(
+                    f"{provider_name}: unavailable ({models}) — {reason}"
+                )
+elif page == "Logs":
+    st.header("Logs")
+
+    logs = load_endpoint("/logs")
+
+    if logs is not None:
+        col1, col2 = st.columns(2)
+        col1.metric("Recent request records", len(logs["records"]))
+        col2.metric("Feedback submitted", logs["feedback_count"])
+
+        if logs["records"]:
+            st.subheader("Recent requests")
+            st.dataframe(
+                logs["records"],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No requests recorded yet.")
+
+    st.divider()
+    st.subheader("Submit feedback")
+
+    with st.form("feedback_form"):
+        query_id = st.text_input(
+            "Query ID",
+            help="Copy a query_id from the Recent requests table.",
+        )
+        rating = st.slider("Rating", min_value=1, max_value=5, value=5)
+        comment = st.text_area("Comment (optional)")
+        submitted = st.form_submit_button("Submit feedback")
+
+    if submitted:
+        if not query_id.strip():
+            st.warning("Query ID is required.")
+        else:
+            try:
+                result = post_json(
+                    "/feedback",
+                    {
+                        "query_id": query_id.strip(),
+                        "rating": rating,
+                        "comment": comment or None,
+                    },
+                )
+                st.success(
+                    f"Feedback accepted. Total feedback: "
+                    f"{result['feedback_count']}"
+                )
+            except DashboardApiError as error:
+                st.error(f"Feedback could not be submitted: {error}")
