@@ -90,6 +90,63 @@ class HealthResponse(BaseModel):
     services: dict[str, ServiceHealth] = Field(default_factory=dict)
 
 
+class ModelAnalytics(BaseModel):
+    model_name: str
+    provider: str
+    request_count: int = Field(ge=0)
+    success_rate: float = Field(ge=0.0, le=1.0)
+    average_latency_ms: float = Field(ge=0.0)
+    p95_latency_ms: float = Field(ge=0.0)
+    total_cost_usd: float = Field(ge=0.0)
+
+
+class TierAnalytics(BaseModel):
+    user_tier: UserTier
+    request_count: int = Field(ge=0)
+    total_cost_usd: float = Field(ge=0.0)
+
+
+class AnalyticsResponse(BaseModel):
+    total_requests: int = Field(ge=0)
+    successful_requests: int = Field(ge=0)
+    failed_requests: int = Field(ge=0)
+    success_rate: float = Field(ge=0.0, le=1.0)
+    average_latency_ms: float = Field(ge=0.0)
+    p95_latency_ms: float = Field(ge=0.0)
+    total_cost_usd: float = Field(ge=0.0)
+    cache_hit_rate: float = Field(ge=0.0, le=1.0)
+    models: list[ModelAnalytics] = Field(default_factory=list)
+    user_tiers: list[TierAnalytics] = Field(default_factory=list)
+
+
+class QualityDashboardResponse(BaseModel):
+    request_count: int = Field(ge=0)
+    success_rate: float = Field(ge=0.0, le=1.0)
+    error_rate: float = Field(ge=0.0, le=1.0)
+    average_latency_ms: float = Field(ge=0.0)
+    p95_latency_ms: float = Field(ge=0.0)
+    slo_latency_compliant: bool
+    hotspots: list[str] = Field(default_factory=list)
+
+
+class StatusResponse(BaseModel):
+    status: Literal["healthy", "degraded", "unhealthy"]
+    router_mode: str
+    telemetry_records: int = Field(ge=0)
+    details: dict = Field(default_factory=dict)
+
+
+class FeedbackRequest(BaseModel):
+    query_id: str = Field(min_length=1)
+    rating: int = Field(ge=1, le=5)
+    comment: str | None = Field(default=None, max_length=2000)
+
+
+class FeedbackResponse(BaseModel):
+    accepted: bool
+    feedback_count: int = Field(ge=0)
+
+
 # ---------------------------------------------------------------------------
 # 2) Internal models -- passed between router and inference engine only
 # ---------------------------------------------------------------------------

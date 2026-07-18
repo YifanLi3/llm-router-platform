@@ -12,12 +12,18 @@ from functools import lru_cache
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.config import get_config
+from app.core.telemetry import RequestRecord, TelemetryStore
 from app.schemas import (
+    AnalyticsResponse,
+    FeedbackRequest,
+    FeedbackResponse,
     HealthResponse,
     InferenceResponse,
     QueryRequest,
+    QualityDashboardResponse,
     RoutingInfo,
     ServiceHealth,
+    StatusResponse,
     TokenUsage,
 )
 from app.services.inference import InferenceEngine, InferenceExhaustedError
@@ -36,6 +42,11 @@ def get_query_router() -> QueryRouter:
 @lru_cache
 def get_inference_engine() -> InferenceEngine:
     return InferenceEngine(get_config())
+
+
+@lru_cache
+def get_telemetry() -> TelemetryStore:
+    return TelemetryStore()
 
 # ---------------------------------------------------------------------------
 # GET /health
@@ -74,7 +85,46 @@ def health(
             ),
         },
     )
-    
+
+
+@api_router.get("/status", response_model=StatusResponse)
+def status(
+    query_router: QueryRouter = Depends(get_query_router),
+    engine: InferenceEngine = Depends(get_inference_engine),
+    telemetry: TelemetryStore = Depends(get_telemetry),
+) -> StatusResponse:
+    providers = engine.provider_health()
+    overall = "healthy" if all(item["healthy"] for item in providers.values()) else "degraded"
+    return StatusResponse(
+        status=overall,
+        router_mode=query_router.config.router.strategy,
+        telemetry_records=telemetry.record_count,
+        details={"providers": providers},
+    )
+
+
+@api_router.get("/analytics", response_model=AnalyticsResponse)
+def analytics(
+    telemetry: TelemetryStore = Depends(get_telemetry),
+) -> AnalyticsResponse:
+    return AnalyticsResponse.model_validate(telemetry.analytics())
+
+
+@api_router.get("/quality/dashboard", response_model=QualityDashboardResponse)
+def quality_dashboard(
+    telemetry: TelemetryStore = Depends(get_telemetry),
+) -> QualityDashboardResponse:
+    return QualityDashboardResponse.model_validate(telemetry.quality_dashboard())
+
+
+@api_router.post("/feedback", response_model=FeedbackResponse)
+def feedback(
+    request: FeedbackRequest,
+    telemetry: TelemetryStore = Depends(get_telemetry),
+) -> FeedbackResponse:
+    feedback_count = telemetry.submit_feedback()
+    return FeedbackResponse(accepted=True, feedback_count=feedback_count)
+
 
 # ---------------------------------------------------------------------------
 # POST /route
@@ -85,12 +135,26 @@ def route(
     request: QueryRequest,
     query_router: QueryRouter = Depends(get_query_router),
     engine: InferenceEngine = Depends(get_inference_engine),
+    telemetry: TelemetryStore = Depends(get_telemetry),
 ) -> InferenceResponse:
     query_id = str(uuid.uuid4())
     decision = query_router.route(request)
     try:
         result = engine.run(request, decision)
     except InferenceExhaustedError as error:
+        telemetry.record(
+            RequestRecord(
+                query_id=query_id,
+                user_tier=request.user_tier,
+                model_name=decision.selected_model,
+                provider="unavailable",
+                success=False,
+                latency_ms=0,
+                cost_usd=0.0,
+                cached=False,
+                error=str(error),
+            )
+        )
         raise HTTPException(
             status_code=503,
             detail={
@@ -100,7 +164,7 @@ def route(
             },
         ) from error
 
-    return InferenceResponse(
+    response = InferenceResponse(
         query_id=query_id,
         response=result.response_text,
         model_name=result.model_name,
@@ -129,3 +193,16 @@ def route(
         provider=result.provider,
         error=None,
     )
+    telemetry.record(
+        RequestRecord(
+            query_id=query_id,
+            user_tier=request.user_tier,
+            model_name=result.model_name,
+            provider=result.provider,
+            success=True,
+            latency_ms=result.latency_ms,
+            cost_usd=result.cost_usd,
+            cached=result.cached,
+        )
+    )
+    return response

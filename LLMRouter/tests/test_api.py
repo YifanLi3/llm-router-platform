@@ -100,3 +100,35 @@ def test_route_returns_fallback_execution_details(monkeypatch):
     assert routing["attempted_models"][0] == "reasoning-heavy"
     assert "reasoning-heavy" in routing["provider_errors"]
     assert "OPENAI_API_KEY" in routing["provider_errors"]["reasoning-heavy"]
+
+
+def test_phase_three_dashboard_endpoints_reflect_route_requests():
+    before = client.get("/analytics").json()["total_requests"]
+
+    routed = client.post(
+        "/route",
+        json={"query": "hello", "user_id": "dashboard-user", "user_tier": "free"},
+    )
+    assert routed.status_code == 200
+
+    analytics = client.get("/analytics")
+    assert analytics.status_code == 200
+    body = analytics.json()
+    assert body["total_requests"] == before + 1
+    assert body["successful_requests"] >= 1
+    assert any(model["model_name"] == "general-small" for model in body["models"])
+
+    quality = client.get("/quality/dashboard")
+    assert quality.status_code == 200
+    assert quality.json()["request_count"] == before + 1
+
+    status = client.get("/status")
+    assert status.status_code == 200
+    assert status.json()["telemetry_records"] == before + 1
+
+    feedback = client.post(
+        "/feedback",
+        json={"query_id": routed.json()["query_id"], "rating": 5, "comment": "Useful"},
+    )
+    assert feedback.status_code == 200
+    assert feedback.json()["accepted"] is True
