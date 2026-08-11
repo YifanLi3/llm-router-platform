@@ -16,7 +16,7 @@ engines:
     enabled: false
     base_url: "http://127.0.0.1:8000/v1"
     served_model_name: "Qwen2.5-7B-Instruct"
-    api_key: empty
+    api_key: "EMPTY"
     health_endpoint: "/health"
     metrics_endpoint: "/metrics"
     max_concurrent_requests: 32
@@ -50,7 +50,6 @@ router:
       api_key_env: null
       avg_latency_ms: 80
       success_rate: 0.995
-      provider: "local"
       engine: "local_mock"
     coding-pro:
       provider: "local"
@@ -65,7 +64,6 @@ router:
       api_key_env: null
       avg_latency_ms: 150
       success_rate: 0.99
-      provider: "local"
       engine: "local_mock"
     long-context:
       provider: "local"
@@ -80,8 +78,21 @@ router:
       api_key_env: null
       avg_latency_ms: 300
       success_rate: 0.985
-      provider: "local"
       engine: "local_mock"
+    vllm-qwen-7b:
+      provider: "vllm"
+      engine: "vllm"
+      provider_model: "Qwen2.5-7B-Instruct"
+      max_tokens: 4096
+      cost_per_1k_input: 0.0
+      cost_per_1k_output: 0.0
+      priority: 1
+      capabilities: ["general", "coding", "chat"]
+      supported_tiers: ["free", "premium", "enterprise"]
+      fallback_model: "general-small"
+      api_key_env: null
+      avg_latency_ms: 250
+      success_rate: 0.98
     reasoning-heavy:
       provider: "openai"
       provider_model: "gpt-4o-mini"
@@ -95,7 +106,6 @@ router:
       api_key_env: "OPENAI_API_KEY"
       avg_latency_ms: 800
       success_rate: 0.97
-      provider: "openai"
       engine: "openai"
   # ---------------- Routing rules ----------------
   # Evaluated top-to-bottom; first match narrows the candidate set.

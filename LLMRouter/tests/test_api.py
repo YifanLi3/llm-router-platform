@@ -19,13 +19,26 @@ def test_health_returns_200():
     body = r.json()
     assert body["status"] == "degraded"
     assert body["services"]["router"]["healthy"] is True
-    assert body["services"]["router"]["details"]["model_count"] == 4
+    assert body["services"]["router"]["details"]["model_count"] == 5
 
     providers = body["services"]["inference"]["details"]["providers"]
     assert providers["local"]["healthy"] is True
     assert providers["openai"]["healthy"] is False
     assert "OPENAI_API_KEY" in providers["openai"]["reason"]
     assert "services" in body
+
+
+def test_lifespan_creates_local_load_snapshot():
+    # Context manager ensures FastAPI startup and shutdown both run.
+    with TestClient(app):
+        tracker = app.state.load_tracker
+        snapshot = tracker.get_snapshot("local_mock")
+
+        assert snapshot is not None
+        assert snapshot.engine == "local_mock"
+        assert snapshot.active_requests == 0
+        assert snapshot.queue_depth == 0
+        assert snapshot.kv_cache_usage == 0.0
 
 # ---------------------------------------------------------------------------
 # /route -- happy paths

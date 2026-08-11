@@ -73,3 +73,28 @@ def test_all_failed_models_raise_explainable_error(monkeypatch):
     assert error.attempted_models == ["reasoning-heavy"]
     assert "reasoning-heavy" in error.provider_errors
     assert "OPENAI_API_KEY" in error.provider_errors["reasoning-heavy"]
+
+
+def test_disabled_vllm_falls_back_to_local():
+    engine = InferenceEngine(get_config())
+
+    result = engine.run(
+        QueryRequest(
+            query="Explain continuous batching",
+            user_id="u1",
+            user_tier="free",
+        ),
+        RoutingDecision(
+            selected_model="vllm-qwen-7b",
+            routing_reason="test",
+            confidence=1.0,
+            fallback_models=["general-small"],
+        ),
+    )
+
+    assert result.model_name == "general-small"
+    assert result.provider == "local"
+    assert result.fallback_used is True
+    assert result.attempted_models == ["vllm-qwen-7b", "general-small"]
+    assert "vllm-qwen-7b" in result.provider_errors
+    assert "disabled" in result.provider_errors["vllm-qwen-7b"]

@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 
 from app.providers.anthropic import AnthropicProvider
-from app.providers.base import BaseProvider, ProviderError
+from app.providers.base import BaseProvider, ProviderError, ProviderUnavailableError
 from app.providers.local import LocalProvider
 from app.providers.openai import OpenAIProvider
+from app.providers.vllm import VLLMProvider
 from app.schemas import AppConfig, InferenceResult, QueryRequest, RoutingDecision
 
 logger = logging.getLogger(__name__)
@@ -51,10 +52,9 @@ class InferenceEngine:
                 provider_errors[model_name] = "Model is not declared in config.yaml."
                 continue
 
-            attempted_models.append(model_name)
-            provider = self._get_provider(model_cfg.provider)
-
             try:
+                attempted_models.append(model_name)
+                provider = self._get_provider(model_cfg.provider)
                 result = provider.generate(
                     query=request.query,
                     model_name=model_name,
@@ -142,6 +142,17 @@ class InferenceEngine:
             return OpenAIProvider()
         if provider_name == "anthropic":
             return AnthropicProvider()
+        if provider_name == "vllm":
+            engine_config = self.config.engines.get("vllm")
+            if engine_config is None:
+                raise ProviderUnavailableError(
+                    "vLLM provider is configured, but no 'vllm' engine exists."
+                )
+            if not engine_config.enabled:
+                raise ProviderUnavailableError(
+                    "vLLM engine is disabled in config.yaml."
+                )
+            return VLLMProvider(engine_config)
         raise ValueError(f"Unsupported provider {provider_name!r}.")
 
 
