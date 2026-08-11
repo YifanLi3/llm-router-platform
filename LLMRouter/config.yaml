@@ -5,6 +5,22 @@ api:
   host: "0.0.0.0"
   port: 8081
 
+engines:
+  local_mock:
+    enabled: true
+    base_url: "http://localhost"
+    served_model_name: "mock-echo"
+    max_concurrent_requests: 100
+
+  vllm:
+    enabled: false
+    base_url: "http://127.0.0.1:8000/v1"
+    served_model_name: "Qwen2.5-7B-Instruct"
+    api_key: empty
+    health_endpoint: "/health"
+    metrics_endpoint: "/metrics"
+    max_concurrent_requests: 32
+
 router:
   default_model: "general-small"
   strategy: "intelligent"
@@ -12,6 +28,13 @@ router:
     free: 0.01
     premium: 0.1
     enterprise: 1.00
+  load_weights:
+    success_rate: 0.30
+    cost: 0.15
+    priority: 0.10
+    latency: 0.20
+    kv_cache_usage: 0.15
+    queue_depth: 0.10
 
   models:
     general-small:
@@ -27,6 +50,8 @@ router:
       api_key_env: null
       avg_latency_ms: 80
       success_rate: 0.995
+      provider: "local"
+      engine: "local_mock"
     coding-pro:
       provider: "local"
       provider_model: "mock-code-v1"
@@ -40,6 +65,8 @@ router:
       api_key_env: null
       avg_latency_ms: 150
       success_rate: 0.99
+      provider: "local"
+      engine: "local_mock"
     long-context:
       provider: "local"
       provider_model: "mock-long-v1"
@@ -53,6 +80,8 @@ router:
       api_key_env: null
       avg_latency_ms: 300
       success_rate: 0.985
+      provider: "local"
+      engine: "local_mock"
     reasoning-heavy:
       provider: "openai"
       provider_model: "gpt-4o-mini"
@@ -66,7 +95,8 @@ router:
       api_key_env: "OPENAI_API_KEY"
       avg_latency_ms: 800
       success_rate: 0.97
-
+      provider: "openai"
+      engine: "openai"
   # ---------------- Routing rules ----------------
   # Evaluated top-to-bottom; first match narrows the candidate set.
   # Available variables in `condition`:

@@ -10,6 +10,7 @@ Keeping these three categories visually separated makes it obvious which
 schema you may change without breaking which contract.
 """
 
+from email.policy import default
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -23,6 +24,22 @@ UserTier = Literal["free", "premium", "enterprise"]
 
 QueryType = Literal["general", "coding", "analysis", "reasoning", "long_context"]
 
+class RuntimeLoadSnapshot(BaseModel):
+    """A point-in-time view of one inference engine's load."""
+
+    engine: str
+    kv_cache_usage: float = Field(default=0.0, ge=0.0, le=1.0)
+    active_requests: int = Field(default=0, ge=0)
+    queue_depth: int = Field(default=0, ge=0)
+    gpu_utilization: float | None = Field(default=None, ge=0.0, le=1.0)
+    updated_at: float = 0.0
+
+class InferenceMetrics(BaseModel):
+    """Inference-serving metrics measured for one completed request."""
+    ttft_ms: float | None = Field(default=None, ge=0.0)
+    tpot_ms: float | None = Field(default=None, ge=0.0)
+    tokens_per_second: float | None = Field(default=None, ge=0.0)
+    total_latency_ms: int = Field(default=0, ge=0)
 
 class QueryRequest(BaseModel):
     """Body of POST /route.
@@ -60,7 +77,10 @@ class RoutingInfo(BaseModel):
     fallback_reason: str | None = None
     attempted_models: list[str] = Field(default_factory=list)
     provider_errors: dict[str, str] = Field(default_factory=dict)
-
+    engine: str = "local_mock"
+    runtime_load: RuntimeLoadSnapshot | None = None
+    load_score: float = 0.0
+    
 
 class InferenceResponse(BaseModel):
     """Body of POST /route response."""
@@ -76,6 +96,7 @@ class InferenceResponse(BaseModel):
 
     provider: str = "local"
     error: str | None = None
+    inference_metrics: InferenceMetrics = Field(default_factory=InferenceMetrics)
 
 
 class ServiceHealth(BaseModel):
@@ -182,6 +203,9 @@ class RoutingDecision(BaseModel):
     matched_rule: str | None = None
     fallback_models: list[str] = Field(default_factory=list)
     score_breakdown: dict[str, float] = Field(default_factory=dict)
+    engine: str = "local_mock"
+    runtime_load: RuntimeLoadSnapshot | None = None
+    load_score: float = 0.0
 
 
 class InferenceResult(BaseModel):
@@ -204,6 +228,9 @@ class InferenceResult(BaseModel):
     fallback_reason: str | None = None
     attempted_models: list[str] = Field(default_factory=list)
     provider_errors: dict[str, str] = Field(default_factory=dict)
+    engine: str = "local_mock"
+    metrics: InferenceMetrics = Field(default_factory=InferenceMetrics)
+    streamed: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -215,11 +242,21 @@ class ApiConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = Field(default=8081, ge=1, le=65535)
 
+class EngineConfig(BaseModel):
+    """Connection and capacity configuration for an inference engine."""
+    enabled: bool = False
+    base_url: str
+    served_model_name: str
+    api_key: str | None = None
+    health_endpoint: str = "/health"
+    metrics_endpoint: str = "/metrics"
+    max_concurrent_requests: int = Field(default=1, ge=1)
 
 class ModelConfig(BaseModel):
     """One entry under router.models in config.yaml."""
 
     provider: str
+    engine: str = "local_mock"
     max_tokens: int = Field(ge=1)
     cost_per_1k_input: float = Field(ge=0.0)
     cost_per_1k_output: float = Field(ge=0.0)
@@ -249,13 +286,15 @@ class RouterConfig(BaseModel):
     default_model: str
     models: dict[str, ModelConfig]
 
-    strategy: Literal["rule_only", "intelligent"] = "intelligent"
+    strategy: Literal["rule_only", "intelligent", "load_aware"] = "intelligent"
     routing_rules: list[RoutingRuleConfig] = Field(default_factory=list)
     tier_cost_limits: dict[str, float] = Field(default_factory=dict)
+    load_weights: dict[str, float] = Field(default_factory=dict)
 
 class AppConfig(BaseModel):
     api: ApiConfig
     router: RouterConfig
+    engines: dict[str, EngineConfig] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
