@@ -233,6 +233,16 @@ class InferenceResult(BaseModel):
     streamed: bool = False
 
 
+class InferenceStreamChunk(BaseModel):
+    """One text chunk emitted by a streaming inference provider."""
+
+    delta: str
+    model_name: str
+    provider: str
+    engine: str
+    fallback_used: bool = False
+
+
 # ---------------------------------------------------------------------------
 # 3) Config models -- mirror the structure of config.yaml
 # ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 import pytest
 
 from app.core.config import get_config
-from app.schemas import QueryRequest
+from app.schemas import QueryRequest, RuntimeLoadSnapshot
 from app.services.router import QueryRouter
 
 
@@ -15,6 +15,16 @@ def router() -> QueryRouter:
 def _req(query: str, tier: str = "free", max_tokens: int = 512) -> QueryRequest:
     return QueryRequest(query=query, user_id="u1", user_tier=tier,
                         max_tokens=max_tokens)
+
+
+class FakeLoadTracker:
+    """Minimal test double; production code receives LoadTracker."""
+
+    def __init__(self, snapshots: dict[str, RuntimeLoadSnapshot]) -> None:
+        self.snapshots = snapshots
+
+    def get_snapshot(self, engine: str) -> RuntimeLoadSnapshot | None:
+        return self.snapshots.get(engine)
 
 
 class TestClassification:
@@ -84,3 +94,62 @@ class TestGracefulDegradation:
         d = router.route(_req("hi", tier="enterprise", max_tokens=32000))
         assert d.selected_model == "general-small"  # default fallback
         assert "capability" in d.routing_reason or "default" in d.routing_reason.lower()
+
+
+class TestLoadAwareRouting:
+    def test_low_load_vllm_is_selected(self):
+        config = get_config().model_copy(deep=True)
+        config.router.strategy = "load_aware"
+        config.router.models["vllm-qwen-7b"].avg_latency_ms = 50
+        config.router.models["vllm-qwen-7b"].success_rate = 0.999
+        tracker = FakeLoadTracker(
+            {
+                "vllm": RuntimeLoadSnapshot(
+                    engine="vllm",
+                    kv_cache_usage=0.0,
+                    active_requests=0,
+                    queue_depth=0,
+                ),
+                "local_mock": RuntimeLoadSnapshot(
+                    engine="local_mock",
+                    kv_cache_usage=0.0,
+                    active_requests=0,
+                    queue_depth=0,
+                ),
+            }
+        )
+
+        decision = QueryRouter(config, load_tracker=tracker).route(_req("hello"))
+
+        assert decision.selected_model == "vllm-qwen-7b"
+        assert decision.engine == "vllm"
+        assert decision.runtime_load is not None
+        assert decision.runtime_load.queue_depth == 0
+        assert decision.load_score == 1.0
+
+    def test_high_load_vllm_is_avoided(self):
+        config = get_config().model_copy(deep=True)
+        config.router.strategy = "load_aware"
+        config.router.models["vllm-qwen-7b"].avg_latency_ms = 50
+        config.router.models["vllm-qwen-7b"].success_rate = 0.999
+        tracker = FakeLoadTracker(
+            {
+                "vllm": RuntimeLoadSnapshot(
+                    engine="vllm",
+                    kv_cache_usage=1.0,
+                    active_requests=32,
+                    queue_depth=32,
+                ),
+                "local_mock": RuntimeLoadSnapshot(
+                    engine="local_mock",
+                    kv_cache_usage=0.0,
+                    active_requests=0,
+                    queue_depth=0,
+                ),
+            }
+        )
+
+        decision = QueryRouter(config, load_tracker=tracker).route(_req("hello"))
+
+        assert decision.selected_model != "vllm-qwen-7b"
+        assert decision.engine == "local_mock"

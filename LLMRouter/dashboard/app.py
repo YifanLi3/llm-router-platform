@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
+
 import streamlit as st
 
-from api import API_BASE_URL, DashboardApiError, fetch_json, post_json
+from api import API_BASE_URL, DashboardApiError, fetch_json, fetch_text, post_json
 
 st.set_page_config(
     page_title="LLM Router Console",
@@ -23,11 +25,38 @@ def load_endpoint(path: str) -> dict | None:
         st.error(f"Data unavailable: {error}")
         return None
 
+
+def load_metrics() -> str | None:
+    try:
+        return fetch_text("/metrics")
+    except DashboardApiError as error:
+        st.error(f"Metrics unavailable: {error}")
+        return None
+
+
+def prometheus_total(metrics_text: str, metric_name: str) -> float:
+    """Sum all Prometheus samples for one metric name."""
+    pattern = rf"^{re.escape(metric_name)}(?:\{{[^}}]*\}})?\s+([0-9.eE+-]+)$"
+    return sum(
+        float(match.group(1))
+        for line in metrics_text.splitlines()
+        if (match := re.match(pattern, line))
+    )
+
 with st.sidebar:
     st.header("Navigation")
     page = st.radio(
         "Page", 
-        ["Overview", "Models", "Performance", "Users", "Costs", "Alerts", "Logs"],
+        [
+            "Overview",
+            "Models",
+            "Performance",
+            "Users",
+            "Costs",
+            "Alerts",
+            "Logs",
+            "Inference Engine",
+        ],
     )
 
     if st.button("Refresh data"):
@@ -270,3 +299,63 @@ elif page == "Logs":
                 )
             except DashboardApiError as error:
                 st.error(f"Feedback could not be submitted: {error}")
+
+
+elif page == "Inference Engine":
+    st.header("Inference Engine")
+
+    health = load_endpoint("/health")
+    metrics_text = load_metrics()
+
+    if health is not None:
+        engines = health["services"]["inference"]["details"]["engines"]
+        engine_rows = [
+            {
+                "engine": engine_name,
+                "enabled": details["enabled"],
+                "healthy": details["healthy"],
+                "active_requests": details["active_requests"],
+                "queue_depth": details["queue_depth"],
+                "kv_cache_usage": details["kv_cache_usage"],
+            }
+            for engine_name, details in engines.items()
+        ]
+
+        st.subheader("Current engine load")
+        st.dataframe(engine_rows, use_container_width=True, hide_index=True)
+
+        st.subheader("Active requests by engine")
+        st.bar_chart(
+            {row["engine"]: row["active_requests"] for row in engine_rows}
+        )
+
+    if metrics_text is not None:
+        request_count = prometheus_total(
+            metrics_text,
+            "llm_router_requests_total",
+        )
+        fallback_count = prometheus_total(
+            metrics_text,
+            "llm_router_fallback_total",
+        )
+        ttft_sum = prometheus_total(metrics_text, "llm_router_ttft_seconds_sum")
+        ttft_count = prometheus_total(metrics_text, "llm_router_ttft_seconds_count")
+        throughput_sum = prometheus_total(
+            metrics_text,
+            "llm_router_tokens_per_second_sum",
+        )
+        throughput_count = prometheus_total(
+            metrics_text,
+            "llm_router_tokens_per_second_count",
+        )
+
+        average_ttft_ms = ttft_sum / ttft_count * 1000 if ttft_count else 0.0
+        average_tokens_per_second = (
+            throughput_sum / throughput_count if throughput_count else 0.0
+        )
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Inference requests", f"{request_count:.0f}")
+        col2.metric("Average TTFT", f"{average_ttft_ms:.1f} ms")
+        col3.metric("Average tokens/s", f"{average_tokens_per_second:.2f}")
+        col4.metric("Fallbacks", f"{fallback_count:.0f}")

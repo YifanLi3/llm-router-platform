@@ -6,7 +6,7 @@ import json
 import os
 from typing import Any
 from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 API_BASE_URL = os.getenv("ROUTER_API_URL", "http://localhost:8081")
 
@@ -28,6 +28,24 @@ def fetch_json(path: str) -> dict[str, Any]:
         raise DashboardApiError(
             f"Backend unavailable at {API_BASE_URL}: {error}"
         ) from error
+
+
+def fetch_text(path: str) -> str:
+    """Fetch plain-text endpoints such as Prometheus /metrics."""
+    url = f"{API_BASE_URL}{path}"
+
+    try:
+        with urlopen(url, timeout=3) as response:
+            if response.status != 200:
+                raise DashboardApiError(
+                    f"Backend returned HTTP {response.status} for {path}."
+                )
+            return response.read().decode("utf-8")
+    except (URLError, TimeoutError) as error:
+        raise DashboardApiError(
+            f"Backend unavailable at {API_BASE_URL}: {error}"
+        ) from error
+
 
 def post_json(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Send JSON to one FastAPI endpoint and return its JSON response."""

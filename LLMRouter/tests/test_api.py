@@ -40,6 +40,15 @@ def test_lifespan_creates_local_load_snapshot():
         assert snapshot.queue_depth == 0
         assert snapshot.kv_cache_usage == 0.0
 
+
+def test_lifespan_injects_tracker_into_query_router():
+    with TestClient(app):
+        tracker = app.state.load_tracker
+        router = app.state.query_router
+
+        assert router.load_tracker is tracker
+        assert router.load_tracker.get_snapshot("local_mock") is not None
+
 # ---------------------------------------------------------------------------
 # /route -- happy paths
 # ---------------------------------------------------------------------------
@@ -145,3 +154,40 @@ def test_phase_three_dashboard_endpoints_reflect_route_requests():
     )
     assert feedback.status_code == 200
     assert feedback.json()["accepted"] is True
+
+
+def test_prometheus_metrics_endpoint_contains_router_metrics():
+    client.post(
+        "/route",
+        json={
+            "query": "hello",
+            "user_id": "metrics-user",
+            "user_tier": "free",
+        },
+    )
+
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert "text/plain" in response.headers["content-type"]
+    assert "llm_router_requests_total" in response.text
+    assert "llm_router_request_duration_seconds" in response.text
+
+
+def test_route_stream_emits_meta_token_and_done_events():
+    response = client.post(
+        "/route/stream",
+        json={
+            "query": "hello",
+            "user_id": "stream-user",
+            "user_tier": "free",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers["content-type"]
+    assert "event: meta" in response.text
+    assert "event: token" in response.text
+    assert "event: done" in response.text
+    assert '"ttft_ms"' in response.text
+    assert '"tokens_per_second"' in response.text

@@ -94,11 +94,13 @@ class VLLMProvider(BaseProvider):
         self,
         *,
         query: str,
+        model_name: str,
         model_cfg: ModelConfig,
         max_tokens: int,
         temperature: float,
     ) -> AsyncIterator[str]:
         """Yield text deltas from vLLM's OpenAI-compatible SSE stream."""
+        del model_name
         payload = {
             "model": model_cfg.provider_model
             or self.engine_config.served_model_name,

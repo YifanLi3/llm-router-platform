@@ -12,7 +12,9 @@ from __future__ import annotations
 import logging
 logger = logging.getLogger(__name__)
 
+from app.infra.load_tracker import LoadTracker
 from app.core.rules import RuleRuntimeError, RuleSyntaxError, safe_eval
+from app.core.tokenization import count_tokens
 
 from app.schemas import (
     AppConfig,
@@ -20,6 +22,7 @@ from app.schemas import (
     QueryRequest,
     QueryType,
     RoutingDecision,
+    RuntimeLoadSnapshot,
     UserTier,
 )
 
@@ -37,7 +40,6 @@ _KEYWORDS: dict[str, tuple[str, ...]] = {
                   "prove", "derive"),
 }
 
-_CHARS_PER_TOKEN = 4                # rough English/code approximation
 _LONG_CONTEXT_TOKENS = 500          # promote "general" -> "long_context" above this
 
 # ---------------------------------------------------------------------------
@@ -53,8 +55,13 @@ assert abs(W_SUCCESS + W_LATENCY + W_COST + W_PRIORITY + W_CAPABILITY - 1.0) < 1
 class QueryRouter:
     """Map a QueryRequest to a RoutingDecision using config + scoring."""
 
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        load_tracker: LoadTracker | None = None,
+    ) -> None:
         self.config = config
+        self.load_tracker = load_tracker
         logger.debug(
             "QueryRouter initialised",
             extra={
@@ -134,18 +141,20 @@ class QueryRouter:
             requested_max_tokens=request.max_tokens,
         )
         top_name, top_score, top_breakdown = ranked[0]
+        top_model_cfg = self.config.router.models[top_name]
+        top_runtime_load = self._runtime_load(top_model_cfg.engine)
 
         # 6. fallback chain
         fallback_models = self._build_fallback_chain(
             top=top_name,
             ranked_tail=[n for n, _, _ in ranked[1:]],
             rule_fallback=rule_fallback,
-            model_static_fallback=self.config.router.models[top_name].fallback_model,
+            model_static_fallback=top_model_cfg.fallback_model,
         )
 
         # 7. assemble decision
         est_cost = self._estimate_cost(
-            self.config.router.models[top_name], token_count, request.max_tokens
+            top_model_cfg, token_count, request.max_tokens
         )
         reason = (
             (f"[rule={matched_rule}] " if matched_rule else "[no rule matched] ")
@@ -178,6 +187,9 @@ class QueryRouter:
             matched_rule=matched_rule,
             fallback_models=fallback_models,
             score_breakdown=top_breakdown,
+            engine=top_model_cfg.engine,
+            runtime_load=top_runtime_load,
+            load_score=top_breakdown["load_score"],
         )
 
 
@@ -194,7 +206,7 @@ class QueryRouter:
         return "general", 0.55
 
     def _count_tokens(self, query: str) -> int:
-        return max(1, len(query) // _CHARS_PER_TOKEN)
+        return max(1, count_tokens(query))
 
     def _match_rules(
         self, ctx: dict
@@ -293,12 +305,35 @@ class QueryRouter:
                     + W_PRIORITY    * s_priority
                     + W_CAPABILITY  * s_capability)
 
+            load_penalty = 0.0
+            load_score = 1.0
+            if self.config.router.strategy == "load_aware":
+                snapshot = self._runtime_load(m.engine)
+                kv_cache_usage = snapshot.kv_cache_usage if snapshot else 0.5
+                queue_depth = snapshot.queue_depth if snapshot else 0
+                engine_cfg = self.config.engines.get(m.engine)
+                max_concurrent = (
+                    engine_cfg.max_concurrent_requests if engine_cfg else 1
+                )
+                normalized_queue = min(queue_depth / max_concurrent, 1.0)
+
+                load_penalty = (
+                    self.config.router.load_weights.get("kv_cache_usage", 0.0)
+                    * kv_cache_usage
+                    + self.config.router.load_weights.get("queue_depth", 0.0)
+                    * normalized_queue
+                )
+                load_score = 1.0 - load_penalty
+                total -= load_penalty
+
             breakdown = {
                 "success":    round(W_SUCCESS    * s_success,    4),
                 "latency":    round(W_LATENCY    * s_latency,    4),
                 "cost":       round(W_COST       * s_cost,       4),
                 "priority":   round(W_PRIORITY   * s_priority,   4),
                 "capability": round(W_CAPABILITY * s_capability, 4),
+                "load_penalty": round(load_penalty, 4),
+                "load_score": round(load_score, 4),
                 "total":      round(total, 4),
             }
 
@@ -310,6 +345,12 @@ class QueryRouter:
             extra={"ranked": [(n, round(s, 4)) for n, s, _ in scored]},
         )
         return scored
+
+    def _runtime_load(self, engine: str) -> RuntimeLoadSnapshot | None:
+        """Read the latest cached engine load without performing network I/O."""
+        if self.load_tracker is None:
+            return None
+        return self.load_tracker.get_snapshot(engine)
             
     # ------------------------------------------------------------------
     # Small helpers
@@ -352,6 +393,7 @@ class QueryRouter:
         reason: str,
     ) -> RoutingDecision:
         default = self.config.router.default_model
+        default_cfg = self.config.router.models[default]
         return RoutingDecision(
             selected_model=default,
             routing_reason=reason,
@@ -363,6 +405,9 @@ class QueryRouter:
             matched_rule=matched_rule,
             fallback_models=[],
             score_breakdown={},
+            engine=default_cfg.engine,
+            runtime_load=self._runtime_load(default_cfg.engine),
+            load_score=0.0,
         )
 
 

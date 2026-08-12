@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
+from collections.abc import AsyncIterator
 
+from app.core.tokenization import count_tokens
 from app.providers.base import BaseProvider
 from app.schemas import InferenceResult, ModelConfig
 
@@ -21,8 +24,8 @@ class LocalProvider(BaseProvider):
         started_at = time.perf_counter()
 
         response_text = f"Echo from {model_name}: {query[:200]}"
-        input_tokens = max(1, len(query.split()))
-        output_tokens = len(response_text.split())
+        input_tokens = max(1, count_tokens(query))
+        output_tokens = count_tokens(response_text)
         cost_usd = (
             input_tokens / 1000.0 * model_cfg.cost_per_1k_input
             + output_tokens / 1000.0 * model_cfg.cost_per_1k_output
@@ -38,3 +41,23 @@ class LocalProvider(BaseProvider):
             cached=False,
             provider="local",
         )
+
+    async def stream(
+        self,
+        *,
+        query: str,
+        model_name: str,
+        model_cfg: ModelConfig,
+        max_tokens: int,
+        temperature: float,
+    ) -> AsyncIterator[str]:
+        """Yield deterministic local response chunks for SSE development."""
+        del max_tokens, temperature, model_cfg
+
+        response_text = f"Echo from {model_name}: {query[:200]}"
+        for index, word in enumerate(response_text.split()):
+            prefix = "" if index == 0 else " "
+            yield f"{prefix}{word}"
+
+            # Give the event loop a chance to flush one SSE event.
+            await asyncio.sleep(0)

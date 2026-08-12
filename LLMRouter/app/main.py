@@ -13,6 +13,7 @@ from app.core.config import get_config
 from app.infra.load_tracker import LoadTracker
 from app.providers.vllm import VLLMProvider
 from app.schemas import RuntimeLoadSnapshot
+from app.services.router import QueryRouter
 
 
 @asynccontextmanager
@@ -40,6 +41,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         tracker.register("vllm", vllm_provider.fetch_runtime_load)
 
     app.state.load_tracker = tracker
+    app.state.query_router = QueryRouter(
+        config=cfg,
+        load_tracker=tracker,
+    )
     await tracker.refresh_once()
     await tracker.start()
 

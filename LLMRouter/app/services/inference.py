@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 
 from app.providers.anthropic import AnthropicProvider
 from app.providers.base import BaseProvider, ProviderError, ProviderUnavailableError
 from app.providers.local import LocalProvider
 from app.providers.openai import OpenAIProvider
 from app.providers.vllm import VLLMProvider
-from app.schemas import AppConfig, InferenceResult, QueryRequest, RoutingDecision
+from app.schemas import (
+    AppConfig,
+    InferenceResult,
+    InferenceStreamChunk,
+    QueryRequest,
+    RoutingDecision,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +105,74 @@ class InferenceEngine:
                     },
                 )
         # No model in the selected + fallback chain succeeded.
+        raise InferenceExhaustedError(
+            attempted_models=attempted_models,
+            provider_errors=provider_errors,
+        )
+
+    async def stream(
+        self,
+        request: QueryRequest,
+        decision: RoutingDecision,
+    ) -> AsyncIterator[InferenceStreamChunk]:
+        """Stream chunks from the selected provider, retrying fallbacks on error."""
+        model_names = [decision.selected_model, *decision.fallback_models]
+        attempted_models: list[str] = []
+        provider_errors: dict[str, str] = {}
+
+        for model_name in model_names:
+            model_cfg = self.config.router.models.get(model_name)
+            if model_cfg is None:
+                provider_errors[model_name] = "Model is not declared in config.yaml."
+                continue
+
+            try:
+                attempted_models.append(model_name)
+                provider = self._get_provider(model_cfg.provider)
+                stream_method = getattr(provider, "stream", None)
+                if stream_method is None:
+                    raise ProviderUnavailableError(
+                        f"Provider {model_cfg.provider!r} does not support streaming."
+                    )
+
+                fallback_used = model_name != decision.selected_model
+                async for delta in stream_method(
+                    query=request.query,
+                    model_name=model_name,
+                    model_cfg=model_cfg,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                ):
+                    yield InferenceStreamChunk(
+                        delta=delta,
+                        model_name=model_name,
+                        provider=model_cfg.provider,
+                        engine=model_cfg.engine,
+                        fallback_used=fallback_used,
+                    )
+
+                logger.info(
+                    "streaming inference completed",
+                    extra={
+                        "model": model_name,
+                        "provider": model_cfg.provider,
+                        "fallback_used": fallback_used,
+                        "attempts": attempted_models,
+                    },
+                )
+                return
+
+            except ProviderError as error:
+                provider_errors[model_name] = str(error)
+                logger.warning(
+                    "streaming inference attempt failed; trying fallback",
+                    extra={
+                        "model": model_name,
+                        "provider": model_cfg.provider,
+                        "error": str(error),
+                    },
+                )
+
         raise InferenceExhaustedError(
             attempted_models=attempted_models,
             provider_errors=provider_errors,

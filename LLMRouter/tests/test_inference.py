@@ -1,6 +1,9 @@
 """Tests for provider dispatch and fallback execution."""
 
+import asyncio
+
 from app.core.config import get_config
+from app.providers.local import LocalProvider
 from app.schemas import QueryRequest, RoutingDecision
 from app.services.inference import InferenceEngine
 
@@ -98,3 +101,51 @@ def test_disabled_vllm_falls_back_to_local():
     assert result.attempted_models == ["vllm-qwen-7b", "general-small"]
     assert "vllm-qwen-7b" in result.provider_errors
     assert "disabled" in result.provider_errors["vllm-qwen-7b"]
+
+
+def test_local_provider_streams_response_chunks():
+    config = get_config()
+    provider = LocalProvider()
+
+    async def collect_chunks() -> list[str]:
+        return [
+            chunk
+            async for chunk in provider.stream(
+                query="hello",
+                model_name="general-small",
+                model_cfg=config.router.models["general-small"],
+                max_tokens=32,
+                temperature=0.7,
+            )
+        ]
+
+    chunks = asyncio.run(collect_chunks())
+
+    assert "".join(chunks) == "Echo from general-small: hello"
+    assert len(chunks) > 1
+
+
+def test_engine_streams_local_chunks():
+    engine = InferenceEngine(get_config())
+
+    async def collect_chunks() -> list:
+        return [
+            chunk
+            async for chunk in engine.stream(
+                QueryRequest(query="hello", user_id="u1"),
+                RoutingDecision(
+                    selected_model="general-small",
+                    routing_reason="test",
+                    confidence=1.0,
+                ),
+            )
+        ]
+
+    chunks = asyncio.run(collect_chunks())
+
+    assert "".join(chunk.delta for chunk in chunks) == (
+        "Echo from general-small: hello"
+    )
+    assert all(chunk.provider == "local" for chunk in chunks)
+    assert all(chunk.engine == "local_mock" for chunk in chunks)
+    assert all(chunk.fallback_used is False for chunk in chunks)
